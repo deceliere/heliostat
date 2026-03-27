@@ -36,6 +36,7 @@ constexpr bool WAIT_FOR_SERIAL = true;
 constexpr uint32_t WAIT_FOR_SERIAL_TIMEOUT_MS = 15000;
 constexpr uint8_t ESPNOW_CHANNEL = 1;
 constexpr uint32_t REMOTE_ANNOUNCE_MS = 1000;
+constexpr uint32_t BLINK_PERIOD_MS = 300;
 constexpr uint8_t ESPNOW_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 #if defined(DEVICE_ROLE_CONTROLLER)
@@ -68,6 +69,9 @@ Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ8
 
 float panAngleDeg = PAN_START_DEG;
 float tiltAngleDeg = TILT_START_DEG;
+uint8_t baseRed = 0;
+uint8_t baseGreen = 0;
+uint8_t baseBlue = 0;
 uint8_t currentRed = 0;
 uint8_t currentGreen = 0;
 uint8_t currentBlue = 0;
@@ -84,6 +88,7 @@ bool espNowPeerReady = false;
 bool lastSendOk = false;
 bool packetReceived = false;
 bool broadcastPeerReady = false;
+bool blinkActive = false;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
@@ -149,7 +154,21 @@ void setStatusLedGreen() {
   showLedColor(0, 255, 0);
 }
 
-void applyLedFromPanTilt() {
+void updateDisplayedColor(uint32_t nowMs) {
+  if (!blinkActive) {
+    showLedColor(baseRed, baseGreen, baseBlue);
+    return;
+  }
+
+  const bool blinkOn = ((nowMs / BLINK_PERIOD_MS) % 2U) == 0U;
+  if (blinkOn) {
+    showLedColor(baseRed, baseGreen, baseBlue);
+  } else {
+    showLedColor(0, 0, 0);
+  }
+}
+
+void computeBaseColorFromPanTilt() {
   const float panNorm = (panAngleDeg - PAN_MIN_DEG) / (PAN_MAX_DEG - PAN_MIN_DEG);
   const float tiltNorm = (tiltAngleDeg - TILT_MIN_DEG) / (TILT_MAX_DEG - TILT_MIN_DEG);
 
@@ -170,12 +189,26 @@ void applyLedFromPanTilt() {
     blue = static_cast<uint8_t>(blend * 255.0f);
   }
 
-  const float intensity = clampedTilt;
-  red = static_cast<uint8_t>(red * intensity);
-  green = static_cast<uint8_t>(green * intensity);
-  blue = static_cast<uint8_t>(blue * intensity);
+  if (clampedTilt <= 0.5f) {
+    const float dim = clampedTilt / 0.5f;
+    red = static_cast<uint8_t>(red * dim);
+    green = static_cast<uint8_t>(green * dim);
+    blue = static_cast<uint8_t>(blue * dim);
+  } else {
+    const float whiten = (clampedTilt - 0.5f) / 0.5f;
+    red = static_cast<uint8_t>(red + ((255.0f - red) * whiten));
+    green = static_cast<uint8_t>(green + ((255.0f - green) * whiten));
+    blue = static_cast<uint8_t>(blue + ((255.0f - blue) * whiten));
+  }
 
-  showLedColor(red, green, blue);
+  baseRed = red;
+  baseGreen = green;
+  baseBlue = blue;
+}
+
+void applyLedFromPanTilt(uint32_t nowMs) {
+  computeBaseColorFromPanTilt();
+  updateDisplayedColor(nowMs);
 }
 
 void setupEspNowWifi() {
@@ -368,12 +401,14 @@ void updateLedFromXbox(uint32_t nowMs) {
     tiltAngleDeg = TILT_START_DEG;
   }
 
+  blinkActive = state.buttonB;
+
   panAngleDeg = constrain(panAngleDeg + (panInput * MAX_SPEED_DEG_PER_SEC * speedBoost * dt),
                           PAN_MIN_DEG, PAN_MAX_DEG);
   tiltAngleDeg = constrain(tiltAngleDeg + (tiltInput * MAX_SPEED_DEG_PER_SEC * speedBoost * dt),
                            TILT_MIN_DEG, TILT_MAX_DEG);
 
-  applyLedFromPanTilt();
+  applyLedFromPanTilt(nowMs);
   sendLedPacket();
 #else
   (void)nowMs;
@@ -391,9 +426,10 @@ void printStatus(uint32_t nowMs) {
     BLEControlsEvent state;
     controller.readControls(state);
     Serial.printf(
-        "ROLE=controller | xbox=ok | peer=%s | tx=%s | pan=%6.1f | tilt=%6.1f | rgb=(%3u,%3u,%3u) | lx=%+.2f ly=%+.2f\n",
+        "ROLE=controller | xbox=ok | peer=%s | tx=%s | blink=%s | pan=%6.1f | tilt=%6.1f | rgb=(%3u,%3u,%3u) | lx=%+.2f ly=%+.2f\n",
         espNowPeerReady ? "ok" : "missing",
         lastSendOk ? "ok" : "pending",
+        blinkActive ? "on" : "off",
         panAngleDeg, tiltAngleDeg,
         currentRed, currentGreen, currentBlue,
         state.leftStickX, state.leftStickY);
@@ -421,7 +457,8 @@ void printStatus(uint32_t nowMs) {
 #if defined(DEVICE_ROLE_CONTROLLER)
 void onControllerConnect(NimBLEAddress address) {
   xboxConnected = true;
-  applyLedFromPanTilt();
+  blinkActive = false;
+  applyLedFromPanTilt(millis());
   sendLedPacket();
   Serial.printf("Xbox connected: %s\n", address.toString().c_str());
 }
@@ -459,7 +496,7 @@ void setup() {
   controller.onConnect(onControllerConnect);
   controller.onDisconnect(onControllerDisconnect);
   controller.begin();
-  applyLedFromPanTilt();
+  applyLedFromPanTilt(millis());
 #endif
 
   Serial.println();
