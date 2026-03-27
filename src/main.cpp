@@ -41,9 +41,14 @@ constexpr uint32_t BLINK_PERIOD_MS = 300;
 constexpr uint8_t ESPNOW_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 constexpr int PAN_SERVO_PIN = 5;
 constexpr int TILT_SERVO_PIN = 6;
-constexpr int SERVO_MIN_PULSE_US = 500;
-constexpr int SERVO_MAX_PULSE_US = 2500;
+constexpr int SERVO_MIN_PULSE_US = 1000;
+constexpr int SERVO_NEUTRAL_PULSE_US = 1500;
+constexpr int SERVO_MAX_PULSE_US = 2000;
 constexpr int SERVO_FREQUENCY_HZ = 50;
+constexpr int SERVO_SPEED_OFFSET_US = 220;
+constexpr float CONTINUOUS_SERVO_MAX_SPEED_DEG_PER_SEC = 120.0f;
+constexpr float CONTINUOUS_SERVO_STOP_TOLERANCE_DEG = 2.0f;
+constexpr uint32_t SERVO_UPDATE_MS = 20;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 constexpr const char* ROLE_NAME = "controller";
@@ -75,6 +80,9 @@ Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ8
 #if defined(DEVICE_ROLE_REMOTE)
 Servo panServo;
 Servo tiltServo;
+float panEstimateDeg = PAN_START_DEG;
+float tiltEstimateDeg = TILT_START_DEG;
+uint32_t lastServoUpdateMs = 0;
 #endif
 
 float panAngleDeg = PAN_START_DEG;
@@ -264,9 +272,50 @@ void ensureBroadcastPeer() {
 }
 
 #if defined(DEVICE_ROLE_REMOTE)
-void writeServos() {
-  panServo.write(static_cast<int>(lroundf(constrain(panAngleDeg, PAN_MIN_DEG, PAN_MAX_DEG))));
-  tiltServo.write(static_cast<int>(lroundf(constrain(tiltAngleDeg, TILT_MIN_DEG, TILT_MAX_DEG))));
+int speedToPulseUs(float speed) {
+  const float clamped = constrain(speed, -1.0f, 1.0f);
+  return SERVO_NEUTRAL_PULSE_US +
+         static_cast<int>(lroundf(clamped * static_cast<float>(SERVO_SPEED_OFFSET_US)));
+}
+
+void stopServos() {
+  panServo.writeMicroseconds(SERVO_NEUTRAL_PULSE_US);
+  tiltServo.writeMicroseconds(SERVO_NEUTRAL_PULSE_US);
+}
+
+float updateContinuousServo(Servo& servo, float targetDeg, float estimateDeg,
+                            float minDeg, float maxDeg, float dtSeconds) {
+  const float clampedTarget = constrain(targetDeg, minDeg, maxDeg);
+  const float errorDeg = clampedTarget - estimateDeg;
+
+  if (fabsf(errorDeg) <= CONTINUOUS_SERVO_STOP_TOLERANCE_DEG) {
+    servo.writeMicroseconds(SERVO_NEUTRAL_PULSE_US);
+    return constrain(estimateDeg, minDeg, maxDeg);
+  }
+
+  const float normalizedSpeed =
+      constrain(errorDeg / (maxDeg - minDeg), -1.0f, 1.0f);
+  servo.writeMicroseconds(speedToPulseUs(normalizedSpeed));
+
+  const float nextEstimate =
+      estimateDeg + (normalizedSpeed * CONTINUOUS_SERVO_MAX_SPEED_DEG_PER_SEC * dtSeconds);
+  return constrain(nextEstimate, minDeg, maxDeg);
+}
+
+void updateRemoteServos(uint32_t nowMs) {
+  if ((nowMs - lastServoUpdateMs) < SERVO_UPDATE_MS) {
+    return;
+  }
+
+  const float dtSeconds = (nowMs - lastServoUpdateMs) / 1000.0f;
+  lastServoUpdateMs = nowMs;
+
+  panEstimateDeg =
+      updateContinuousServo(panServo, panAngleDeg, panEstimateDeg, PAN_MIN_DEG, PAN_MAX_DEG,
+                            dtSeconds);
+  tiltEstimateDeg =
+      updateContinuousServo(tiltServo, tiltAngleDeg, tiltEstimateDeg, TILT_MIN_DEG, TILT_MAX_DEG,
+                            dtSeconds);
 }
 
 void beginServos() {
@@ -276,7 +325,9 @@ void beginServos() {
   tiltServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
   panServo.attach(PAN_SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
   tiltServo.attach(TILT_SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
-  writeServos();
+  stopServos();
+  delay(250);
+  lastServoUpdateMs = millis();
 }
 #endif
 
@@ -397,7 +448,6 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
 
   panAngleDeg = packet.panDeg;
   tiltAngleDeg = packet.tiltDeg;
-  writeServos();
   packetReceived = true;
   lastRxMs = millis();
   showLedColor(packet.red, packet.green, packet.blue);
@@ -473,11 +523,12 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | rx=%s | age_ms=%lu | local_mac=%s | pan=%6.1f | tilt=%6.1f | rgb=(%3u,%3u,%3u)\n",
+      "ROLE=remote | rx=%s | age_ms=%lu | local_mac=%s | pan_target=%6.1f | tilt_target=%6.1f | pan_est=%6.1f | tilt_est=%6.1f | rgb=(%3u,%3u,%3u)\n",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
       WiFi.macAddress().c_str(),
       panAngleDeg, tiltAngleDeg,
+      panEstimateDeg, tiltEstimateDeg,
       currentRed, currentGreen, currentBlue);
 #endif
 }
@@ -557,6 +608,7 @@ void loop() {
   const uint32_t nowMs = millis();
   updateLedFromXbox(nowMs);
 #if defined(DEVICE_ROLE_REMOTE)
+  updateRemoteServos(nowMs);
   sendAnnouncePacket(nowMs);
 #endif
   printStatus(nowMs);
