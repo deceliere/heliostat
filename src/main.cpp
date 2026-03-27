@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
 #include <BLEController.h>
+#include <BLEControllerRegistry.h>
 #include <ESP32Servo.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -35,6 +36,7 @@ constexpr uint32_t CONTROL_UPDATE_MS = 20;
 constexpr uint32_t STATUS_PRINT_MS = 150;
 constexpr bool WAIT_FOR_SERIAL = true;
 constexpr uint32_t WAIT_FOR_SERIAL_TIMEOUT_MS = 15000;
+constexpr bool CLEAR_XBOX_BONDS_ON_BOOT = true;
 constexpr uint8_t ESPNOW_CHANNEL = 1;
 constexpr uint32_t REMOTE_ANNOUNCE_MS = 1000;
 constexpr uint32_t BLINK_PERIOD_MS = 300;
@@ -46,9 +48,6 @@ constexpr int SERVO_NEUTRAL_PULSE_US = 1500;
 constexpr int SERVO_MAX_PULSE_US = 2000;
 constexpr int SERVO_FREQUENCY_HZ = 50;
 constexpr int SERVO_SPEED_OFFSET_US = 220;
-constexpr float CONTINUOUS_SERVO_MAX_SPEED_DEG_PER_SEC = 120.0f;
-constexpr float CONTINUOUS_SERVO_STOP_TOLERANCE_DEG = 2.0f;
-constexpr uint32_t SERVO_UPDATE_MS = 20;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 constexpr const char* ROLE_NAME = "controller";
@@ -80,9 +79,6 @@ Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ8
 #if defined(DEVICE_ROLE_REMOTE)
 Servo panServo;
 Servo tiltServo;
-float panEstimateDeg = PAN_START_DEG;
-float tiltEstimateDeg = TILT_START_DEG;
-uint32_t lastServoUpdateMs = 0;
 #endif
 
 float panAngleDeg = PAN_START_DEG;
@@ -283,39 +279,9 @@ void stopServos() {
   tiltServo.writeMicroseconds(SERVO_NEUTRAL_PULSE_US);
 }
 
-float updateContinuousServo(Servo& servo, float targetDeg, float estimateDeg,
-                            float minDeg, float maxDeg, float dtSeconds) {
-  const float clampedTarget = constrain(targetDeg, minDeg, maxDeg);
-  const float errorDeg = clampedTarget - estimateDeg;
-
-  if (fabsf(errorDeg) <= CONTINUOUS_SERVO_STOP_TOLERANCE_DEG) {
-    servo.writeMicroseconds(SERVO_NEUTRAL_PULSE_US);
-    return constrain(estimateDeg, minDeg, maxDeg);
-  }
-
-  const float normalizedSpeed =
-      constrain(errorDeg / (maxDeg - minDeg), -1.0f, 1.0f);
-  servo.writeMicroseconds(speedToPulseUs(normalizedSpeed));
-
-  const float nextEstimate =
-      estimateDeg + (normalizedSpeed * CONTINUOUS_SERVO_MAX_SPEED_DEG_PER_SEC * dtSeconds);
-  return constrain(nextEstimate, minDeg, maxDeg);
-}
-
-void updateRemoteServos(uint32_t nowMs) {
-  if ((nowMs - lastServoUpdateMs) < SERVO_UPDATE_MS) {
-    return;
-  }
-
-  const float dtSeconds = (nowMs - lastServoUpdateMs) / 1000.0f;
-  lastServoUpdateMs = nowMs;
-
-  panEstimateDeg =
-      updateContinuousServo(panServo, panAngleDeg, panEstimateDeg, PAN_MIN_DEG, PAN_MAX_DEG,
-                            dtSeconds);
-  tiltEstimateDeg =
-      updateContinuousServo(tiltServo, tiltAngleDeg, tiltEstimateDeg, TILT_MIN_DEG, TILT_MAX_DEG,
-                            dtSeconds);
+void writeServos() {
+  panServo.writeMicroseconds(speedToPulseUs(panAngleDeg));
+  tiltServo.writeMicroseconds(speedToPulseUs(tiltAngleDeg));
 }
 
 void beginServos() {
@@ -327,7 +293,6 @@ void beginServos() {
   tiltServo.attach(TILT_SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
   stopServos();
   delay(250);
-  lastServoUpdateMs = millis();
 }
 #endif
 
@@ -448,6 +413,7 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
 
   panAngleDeg = packet.panDeg;
   tiltAngleDeg = packet.tiltDeg;
+  writeServos();
   packetReceived = true;
   lastRxMs = millis();
   showLedColor(packet.red, packet.green, packet.blue);
@@ -460,7 +426,6 @@ void updateLedFromXbox(uint32_t nowMs) {
     return;
   }
 
-  const float dt = (nowMs - lastControlUpdateMs) / 1000.0f;
   lastControlUpdateMs = nowMs;
 
   if (!controller.isConnected()) {
@@ -475,16 +440,14 @@ void updateLedFromXbox(uint32_t nowMs) {
   const float speedBoost = 1.0f + state.rightTrigger;
 
   if (state.buttonA) {
-    panAngleDeg = PAN_START_DEG;
-    tiltAngleDeg = TILT_START_DEG;
+    panAngleDeg = 0.0f;
+    tiltAngleDeg = 0.0f;
   }
 
   blinkActive = state.buttonB;
 
-  panAngleDeg = constrain(panAngleDeg + (panInput * MAX_SPEED_DEG_PER_SEC * speedBoost * dt),
-                          PAN_MIN_DEG, PAN_MAX_DEG);
-  tiltAngleDeg = constrain(tiltAngleDeg + (tiltInput * MAX_SPEED_DEG_PER_SEC * speedBoost * dt),
-                           TILT_MIN_DEG, TILT_MAX_DEG);
+  panAngleDeg = constrain(panInput * speedBoost, -1.0f, 1.0f);
+  tiltAngleDeg = constrain(tiltInput * speedBoost, -1.0f, 1.0f);
 
   applyLedFromPanTilt(nowMs);
   sendLedPacket();
@@ -504,7 +467,7 @@ void printStatus(uint32_t nowMs) {
     BLEControlsEvent state;
     controller.readControls(state);
     Serial.printf(
-        "ROLE=controller | xbox=ok | peer=%s | tx=%s | blink=%s | pan=%6.1f | tilt=%6.1f | rgb=(%3u,%3u,%3u) | lx=%+.2f ly=%+.2f\n",
+        "ROLE=controller | xbox=ok | peer=%s | tx=%s | blink=%s | pan_speed=%+.2f | tilt_speed=%+.2f | rgb=(%3u,%3u,%3u) | lx=%+.2f ly=%+.2f\n",
         espNowPeerReady ? "ok" : "missing",
         lastSendOk ? "ok" : "pending",
         blinkActive ? "on" : "off",
@@ -523,12 +486,11 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | rx=%s | age_ms=%lu | local_mac=%s | pan_target=%6.1f | tilt_target=%6.1f | pan_est=%6.1f | tilt_est=%6.1f | rgb=(%3u,%3u,%3u)\n",
+      "ROLE=remote | rx=%s | age_ms=%lu | local_mac=%s | pan_speed=%+.2f | tilt_speed=%+.2f | rgb=(%3u,%3u,%3u)\n",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
       WiFi.macAddress().c_str(),
       panAngleDeg, tiltAngleDeg,
-      panEstimateDeg, tiltEstimateDeg,
       currentRed, currentGreen, currentBlue);
 #endif
 }
@@ -572,6 +534,10 @@ void setup() {
 
 #if defined(DEVICE_ROLE_CONTROLLER)
   esp_now_register_send_cb(onEspNowSent);
+  if (CLEAR_XBOX_BONDS_ON_BOOT) {
+    BLEControllerRegistry::deleteBonds();
+    Serial.println("BLE bonds cleared on boot.");
+  }
   controller.onConnect(onControllerConnect);
   controller.onDisconnect(onControllerDisconnect);
   controller.begin();
@@ -593,6 +559,7 @@ void setup() {
 
 #if defined(DEVICE_ROLE_CONTROLLER)
   Serial.println("Remote peer MAC=auto");
+  Serial.printf("CLEAR_XBOX_BONDS_ON_BOOT=%s\n", CLEAR_XBOX_BONDS_ON_BOOT ? "true" : "false");
   Serial.println("Xbox node: left stick X = color R->G->B, left stick Y = intensity.");
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
 #else
@@ -608,7 +575,6 @@ void loop() {
   const uint32_t nowMs = millis();
   updateLedFromXbox(nowMs);
 #if defined(DEVICE_ROLE_REMOTE)
-  updateRemoteServos(nowMs);
   sendAnnouncePacket(nowMs);
 #endif
   printStatus(nowMs);
