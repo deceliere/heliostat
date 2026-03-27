@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
 #include <BLEController.h>
+#include <ESP32Servo.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -38,6 +39,11 @@ constexpr uint8_t ESPNOW_CHANNEL = 1;
 constexpr uint32_t REMOTE_ANNOUNCE_MS = 1000;
 constexpr uint32_t BLINK_PERIOD_MS = 300;
 constexpr uint8_t ESPNOW_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+constexpr int PAN_SERVO_PIN = 5;
+constexpr int TILT_SERVO_PIN = 6;
+constexpr int SERVO_MIN_PULSE_US = 500;
+constexpr int SERVO_MAX_PULSE_US = 2500;
+constexpr int SERVO_FREQUENCY_HZ = 50;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 constexpr const char* ROLE_NAME = "controller";
@@ -66,6 +72,10 @@ constexpr uint32_t LED_PACKET_MAGIC = 0x48454C31;  // "HEL1"
 
 BLEController controller;
 Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ800);
+#if defined(DEVICE_ROLE_REMOTE)
+Servo panServo;
+Servo tiltServo;
+#endif
 
 float panAngleDeg = PAN_START_DEG;
 float tiltAngleDeg = TILT_START_DEG;
@@ -253,6 +263,23 @@ void ensureBroadcastPeer() {
   broadcastPeerReady = addPeer(ESPNOW_BROADCAST_MAC);
 }
 
+#if defined(DEVICE_ROLE_REMOTE)
+void writeServos() {
+  panServo.write(static_cast<int>(lroundf(constrain(panAngleDeg, PAN_MIN_DEG, PAN_MAX_DEG))));
+  tiltServo.write(static_cast<int>(lroundf(constrain(tiltAngleDeg, TILT_MIN_DEG, TILT_MAX_DEG))));
+}
+
+void beginServos() {
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  panServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
+  tiltServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
+  panServo.attach(PAN_SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
+  tiltServo.attach(TILT_SERVO_PIN, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
+  writeServos();
+}
+#endif
+
 #if defined(DEVICE_ROLE_CONTROLLER)
 bool isKnownRemotePeer() {
   static const uint8_t emptyMac[6] = {0, 0, 0, 0, 0, 0};
@@ -370,6 +397,7 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
 
   panAngleDeg = packet.panDeg;
   tiltAngleDeg = packet.tiltDeg;
+  writeServos();
   packetReceived = true;
   lastRxMs = millis();
   showLedColor(packet.red, packet.green, packet.blue);
@@ -497,6 +525,8 @@ void setup() {
   controller.onDisconnect(onControllerDisconnect);
   controller.begin();
   applyLedFromPanTilt(millis());
+#else
+  beginServos();
 #endif
 
   Serial.println();
@@ -517,6 +547,9 @@ void setup() {
 #else
   Serial.println("Remote node ready.");
   Serial.println("Auto-pairing enabled: power the controller ESP32 and it will lock onto this remote.");
+  Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
+                PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
+  Serial.println("Use a dedicated 5-6V supply for MG996R servos and share GND with the ESP32.");
 #endif
 }
 
