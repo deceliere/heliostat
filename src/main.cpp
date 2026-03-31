@@ -33,14 +33,14 @@ constexpr float TILT_START_DEG = 90.0f;
 constexpr float STICK_DEADZONE = 0.12f;
 constexpr float MAX_TARGET_SPEED_DEG_PER_SEC = 45.0f;
 constexpr float PRECISION_TARGET_SPEED_DEG_PER_SEC = 4.0f;
-constexpr float SERVO_MAX_SLEW_DEG_PER_SEC = 6.0f;
+constexpr float SERVO_MAX_SLEW_DEG_PER_SEC = 60.0f;
 constexpr float SERVO_PRECISION_SLEW_DEG_PER_SEC = 0.6f;
 constexpr float SERVO_SWEEP_TEST_SPEED_DEG_PER_SEC = 0.25f;
 constexpr uint32_t CONTROL_UPDATE_MS = 5;
 constexpr uint32_t STATUS_PRINT_MS = 2000;
 constexpr uint32_t TEST_STATUS_PRINT_MS = 250;
 constexpr uint32_t CONTROL_LINK_TIMEOUT_MS = 250;
-constexpr bool ENABLE_RUNTIME_STATUS_LOGS = false;
+constexpr bool ENABLE_RUNTIME_STATUS_LOGS = true;
 constexpr bool WAIT_FOR_SERIAL = false;
 constexpr uint32_t WAIT_FOR_SERIAL_TIMEOUT_MS = 15000;
 constexpr bool CLEAR_XBOX_BONDS_ON_BOOT = true;
@@ -52,7 +52,7 @@ constexpr int PAN_SERVO_PIN = 5;
 constexpr int TILT_SERVO_PIN = 6;
 constexpr int SERVO_MIN_PULSE_US = 1000;
 constexpr int SERVO_MAX_PULSE_US = 2000;
-constexpr int SERVO_COMMAND_STEP_US = 50;
+constexpr int SERVO_COMMAND_STEP_US = 5;
 constexpr uint32_t SERVO_STEP_CALIBRATION_HOLD_MS = 5000;
 constexpr int SERVO_FREQUENCY_HZ = 300;
 constexpr float SPEED_CURVE_EXPONENT = 2.0f;
@@ -683,14 +683,10 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | rx=%s | age_ms=%lu | precision=%s | step_us=%d | pan_in=%+.2f | tilt_in=%+.2f | pan=%6.1f/%6.1f | tilt=%6.1f/%6.1f | pan_us=%d | tilt_us=%d\n",
+      "ROLE=remote | rx=%s | age_ms=%lu | step_us=%d | pan_us=%d | tilt_us=%d\n",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
-      precisionMode ? "on" : "off",
       currentServoCommandStepUs,
-      remotePanInput, remoteTiltInput,
-      panAngleDeg, panTargetDeg,
-      tiltAngleDeg, tiltTargetDeg,
       lastPanPulseUs, lastTiltPulseUs);
 #endif
 }
