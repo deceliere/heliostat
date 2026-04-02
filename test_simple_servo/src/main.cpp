@@ -5,15 +5,16 @@ namespace {
 
 constexpr int SERVO_PIN = 5;
 constexpr int SERVO_MIN_DEG = 0;
-constexpr int SERVO_MAX_DEG = 160;
-constexpr int SERVO_MIN_PULSE_US = 500;
-constexpr int SERVO_MAX_PULSE_US = 2500;
-constexpr int SERVO_FREQUENCY_HZ = 300;
+constexpr int SERVO_MAX_DEG = 180;
+constexpr int SERVO_MIN_PULSE_US = 2300;
+constexpr int SERVO_MAX_PULSE_US = 2400;
+constexpr int SERVO_FREQUENCY_HZ = 350;
 constexpr float DEFAULT_SPEED_DEG_PER_SEC = 30.0f;
-constexpr uint32_t LOOP_DELAY_MS = 20;
+constexpr uint32_t LOOP_DELAY_MS = 200;
 
 Servo panServo;
 float currentAngleDeg = 0.0f;
+int currentUs = 0;
 float speedDegPerSec = DEFAULT_SPEED_DEG_PER_SEC;
 int direction = 1;
 
@@ -53,7 +54,8 @@ void handleSerial() {
 }
 
 void updateSweep() {
-  const float stepDeg = speedDegPerSec * (static_cast<float>(LOOP_DELAY_MS) / 1000.0f);
+  // const float stepDeg = speedDegPerSec * (static_cast<float>(LOOP_DELAY_MS) / 1000.0f);
+  const float stepDeg = 0.1;
   currentAngleDeg += stepDeg * static_cast<float>(direction);
 
   if (currentAngleDeg >= SERVO_MAX_DEG) {
@@ -64,9 +66,35 @@ void updateSweep() {
     direction = 1;
   }
 
-  panServo.write(static_cast<int>(lroundf(currentAngleDeg)));
-  Serial.print("Angle: ");
-  Serial.println(currentAngleDeg, 1);
+  Serial.print("Angle analog: ");
+  Serial.println(currentAngleDeg);
+  // panServo.write(static_cast<int>(lroundf(currentAngleDeg)));
+  float pulseUs = map(currentAngleDeg, SERVO_MIN_DEG, SERVO_MAX_DEG, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
+  panServo.writeMicroseconds(pulseUs);  // for better timing accuracy
+  Serial.print("Angle Us: ");
+  Serial.println(pulseUs);
+}
+
+void updateSweepUs() {
+  // const float stepDeg = speedDegPerSec * (static_cast<float>(LOOP_DELAY_MS) / 1000.0f);
+  const int stepUs = 1;
+  currentUs += stepUs * direction;
+
+  if (currentUs >= SERVO_MAX_PULSE_US) {
+    currentUs = SERVO_MAX_PULSE_US;
+    direction = -1;
+  } else if (currentUs <= SERVO_MIN_PULSE_US) {
+    currentUs = SERVO_MIN_PULSE_US;
+    direction = 1;
+  }
+
+  // Serial.print("Angle analog: ");
+  // Serial.println(currentAngleDeg);
+  // panServo.write(static_cast<int>(lroundf(currentAngleDeg)));
+  // float pulseUs = map(currentAngleDeg, SERVO_MIN_DEG, SERVO_MAX_DEG, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
+  panServo.writeMicroseconds(currentUs);  // for better timing accuracy
+  Serial.print("Angle Us: ");
+  Serial.println(currentUs);
 }
 
 }  // namespace
@@ -88,6 +116,7 @@ void setup() {
 
 void loop() {
   handleSerial();
-  updateSweep();
+  // updateSweep();
+  updateSweepUs();
   delay(LOOP_DELAY_MS);
 }
