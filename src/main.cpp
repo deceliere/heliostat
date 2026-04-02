@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <time.h>
 
 namespace {
 
@@ -32,9 +33,7 @@ constexpr float TILT_START_DEG = 90.0f;
 
 constexpr float STICK_DEADZONE = 0.12f;
 constexpr float MAX_TARGET_SPEED_DEG_PER_SEC = 45.0f;
-constexpr float PRECISION_TARGET_SPEED_DEG_PER_SEC = 10.0f;
 constexpr float SERVO_MAX_SLEW_DEG_PER_SEC = 60.0f;
-constexpr float SERVO_PRECISION_SLEW_DEG_PER_SEC = 0.6f;
 constexpr uint32_t CONTROL_UPDATE_MS = 5;
 constexpr uint32_t STATUS_PRINT_MS = 2000;
 constexpr uint32_t CONTROL_LINK_TIMEOUT_MS = 250;
@@ -53,6 +52,11 @@ constexpr int SERVO_MAX_PULSE_US = 2500;
 constexpr int SERVO_COMMAND_STEP_US = 1;
 constexpr int SERVO_FREQUENCY_HZ = 300;
 constexpr float SPEED_CURVE_EXPONENT = 2.0f;
+constexpr float HELIOSTAT_LATITUDE_DEG = 46.20027148248908f;
+constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
+constexpr time_t HELIOSTAT_START_UNIX_TIME_UTC = 0;
+constexpr float HELIOSTAT_TIME_SCALE = 1.0f;
+constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 constexpr const char* ROLE_NAME = "controller";
@@ -65,8 +69,35 @@ enum PacketType : uint8_t {
   PACKET_TYPE_ANNOUNCE = 2,
 };
 
-constexpr uint8_t PACKET_FLAG_PRECISION = 0x01;
-constexpr uint8_t PACKET_FLAG_RECENTER = 0x02;
+constexpr uint8_t PACKET_FLAG_RECENTER = 0x01;
+constexpr uint8_t PACKET_FLAG_CAPTURE_TARGET = 0x02;
+constexpr uint8_t PACKET_FLAG_AUTO_TRACK = 0x04;
+constexpr uint8_t PACKET_FLAG_TIME_UPDATE = 0x08;
+
+enum ControlMode : uint8_t {
+  CONTROL_MODE_MANUAL = 0,
+  CONTROL_MODE_TARGET_CAPTURED = 1,
+  CONTROL_MODE_AUTO_TRACK = 2,
+};
+
+const char* controlModeName(ControlMode mode) {
+  switch (mode) {
+    case CONTROL_MODE_MANUAL:
+      return "manual";
+    case CONTROL_MODE_TARGET_CAPTURED:
+      return "captured";
+    case CONTROL_MODE_AUTO_TRACK:
+      return "auto";
+    default:
+      return "unknown";
+  }
+}
+
+struct Vec3 {
+  float x;
+  float y;
+  float z;
+};
 
 struct EspNowPacket {
   uint32_t magic;
@@ -75,6 +106,13 @@ struct EspNowPacket {
   uint32_t seq;
   float panInput;
   float tiltInput;
+  float panAngleDeg;
+  float tiltAngleDeg;
+  float panTargetDeg;
+  float tiltTargetDeg;
+  float capturedPanAngleDeg;
+  float capturedTiltAngleDeg;
+  int64_t unixTimeUtc;
 };
 
 constexpr uint32_t LED_PACKET_MAGIC = 0x48454C31;  // "HEL1"
@@ -111,12 +149,35 @@ bool lastSendOk = false;
 bool packetReceived = false;
 bool broadcastPeerReady = false;
 bool blinkActive = false;
-bool precisionMode = false;
 bool recenterRequested = false;
+bool captureTargetRequested = false;
+bool autoTrackEnabled = false;
 bool sendPending = false;
+bool timeUpdatePending = false;
+ControlMode controlMode = CONTROL_MODE_MANUAL;
+bool targetDirectionValid = false;
+bool sunTimeValid = false;
+Vec3 targetDirection = {0.0f, 0.0f, 0.0f};
+time_t heliostatStartUnixTimeUtc = HELIOSTAT_START_UNIX_TIME_UTC;
+uint32_t heliostatTimeBaseMillis = 0;
+float capturedPanAngleDeg = PAN_START_DEG;
+float capturedTiltAngleDeg = TILT_START_DEG;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
+bool lastCaptureButton = false;
+bool lastAutoButton = false;
+char serialCommandBuffer[SERIAL_COMMAND_BUFFER_SIZE] = {};
+size_t serialCommandLength = 0;
+float remoteReportedPanAngleDeg = PAN_START_DEG;
+float remoteReportedTiltAngleDeg = TILT_START_DEG;
+float remoteReportedPanTargetDeg = PAN_START_DEG;
+float remoteReportedTiltTargetDeg = TILT_START_DEG;
+ControlMode remoteReportedControlMode = CONTROL_MODE_MANUAL;
+bool remoteReportedTargetDirectionValid = false;
+bool remoteReportedSunTimeValid = false;
+float remoteReportedCapturedPanAngleDeg = PAN_START_DEG;
+float remoteReportedCapturedTiltAngleDeg = TILT_START_DEG;
 #endif
 
 float applyDeadzone(float value) {
@@ -134,6 +195,131 @@ float applySpeedCurve(float speed) {
   const float clamped = constrain(speed, -1.0f, 1.0f);
   const float magnitude = fabsf(clamped);
   return copysignf(powf(magnitude, SPEED_CURVE_EXPONENT), clamped);
+}
+
+float degToRad(float degrees) {
+  return degrees * (PI / 180.0f);
+}
+
+float radToDeg(float radians) {
+  return radians * (180.0f / PI);
+}
+
+Vec3 makeVec3(float x, float y, float z) {
+  return {x, y, z};
+}
+
+Vec3 addVec3(const Vec3& a, const Vec3& b) {
+  return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+Vec3 scaleVec3(const Vec3& v, float scale) {
+  return {v.x * scale, v.y * scale, v.z * scale};
+}
+
+float dotVec3(const Vec3& a, const Vec3& b) {
+  return (a.x * b.x) + (a.y * b.y) + (a.z * b.z);
+}
+
+float lengthVec3(const Vec3& v) {
+  return sqrtf(dotVec3(v, v));
+}
+
+Vec3 normalizeVec3(const Vec3& v) {
+  const float length = lengthVec3(v);
+  if (length <= 1e-6f) {
+    return {0.0f, 0.0f, 0.0f};
+  }
+  return scaleVec3(v, 1.0f / length);
+}
+
+Vec3 reflectVector(const Vec3& incoming, const Vec3& normal) {
+  return addVec3(incoming, scaleVec3(normal, -2.0f * dotVec3(incoming, normal)));
+}
+
+Vec3 mirrorNormalFromPanTilt(float panDeg, float tiltDeg) {
+  const float panRad = degToRad(panDeg - 90.0f);
+  const float tiltRad = degToRad(tiltDeg - 90.0f);
+  const float cosTilt = cosf(tiltRad);
+  return normalizeVec3({
+      cosTilt * cosf(panRad),
+      cosTilt * sinf(panRad),
+      sinf(tiltRad),
+  });
+}
+
+void panTiltFromMirrorNormal(const Vec3& normal, float& panDeg, float& tiltDeg) {
+  const Vec3 normalized = normalizeVec3(normal);
+  panDeg = constrain(radToDeg(atan2f(normalized.y, normalized.x)) + 90.0f, PAN_MIN_DEG, PAN_MAX_DEG);
+  tiltDeg = constrain(radToDeg(asinf(normalized.z)) + 90.0f, TILT_MIN_DEG, TILT_MAX_DEG);
+}
+
+bool currentUnixTimeUtc(time_t& unixTimeUtc) {
+  if (heliostatStartUnixTimeUtc <= 0) {
+    return false;
+  }
+  const uint32_t elapsedMs = millis() - heliostatTimeBaseMillis;
+  unixTimeUtc =
+      heliostatStartUnixTimeUtc + static_cast<time_t>((static_cast<double>(elapsedMs) *
+                                                       static_cast<double>(HELIOSTAT_TIME_SCALE)) /
+                                                      1000.0);
+  return true;
+}
+
+Vec3 sunVectorFromUnixTime(time_t unixTimeUtc) {
+  const double jd = 2440587.5 + (static_cast<double>(unixTimeUtc) / 86400.0);
+  const double t = (jd - 2451545.0) / 36525.0;
+  const double l0 = fmod(280.46646 + t * (36000.76983 + t * 0.0003032), 360.0);
+  const double m = 357.52911 + t * (35999.05029 - 0.0001537 * t);
+  const double e = 0.016708634 - t * (0.000042037 + 0.0000001267 * t);
+  const double c = sin(degToRad(m)) * (1.914602 - t * (0.004817 + 0.000014 * t)) +
+                   sin(degToRad(2.0 * m)) * (0.019993 - 0.000101 * t) +
+                   sin(degToRad(3.0 * m)) * 0.000289;
+  const double trueLongitude = l0 + c;
+  const double omega = 125.04 - (1934.136 * t);
+  const double lambda = trueLongitude - 0.00569 - 0.00478 * sin(degToRad(omega));
+  const double epsilon0 =
+      23.0 + (26.0 + ((21.448 - t * (46.815 + t * (0.00059 - t * 0.001813))) / 60.0)) / 60.0;
+  const double epsilon = epsilon0 + 0.00256 * cos(degToRad(omega));
+  const double declination = radToDeg(asinf(sinf(degToRad(epsilon)) * sin(degToRad(lambda))));
+
+  const double y = tan(degToRad(epsilon / 2.0)) * tan(degToRad(epsilon / 2.0));
+  const double equationOfTime =
+      4.0 * radToDeg(y * sin(2.0 * degToRad(l0)) - 2.0 * e * sin(degToRad(m)) +
+                     4.0 * e * y * sin(degToRad(m)) * cos(2.0 * degToRad(l0)) -
+                     0.5 * y * y * sin(4.0 * degToRad(l0)) -
+                     1.25 * e * e * sin(2.0 * degToRad(m)));
+
+  const double fractionalDayUtc = fmod(static_cast<double>(unixTimeUtc), 86400.0) / 86400.0;
+  const double trueSolarMinutes =
+      fmod((fractionalDayUtc * 1440.0) + equationOfTime + (4.0 * HELIOSTAT_LONGITUDE_DEG) + 1440.0,
+           1440.0);
+  double hourAngleDeg = (trueSolarMinutes / 4.0) - 180.0;
+  if (hourAngleDeg < -180.0) {
+    hourAngleDeg += 360.0;
+  }
+
+  const double latitudeRad = degToRad(HELIOSTAT_LATITUDE_DEG);
+  const double declinationRad = degToRad(declination);
+  const double hourAngleRad = degToRad(hourAngleDeg);
+
+  const double elevationRad =
+      asin(sin(latitudeRad) * sin(declinationRad) +
+           cos(latitudeRad) * cos(declinationRad) * cos(hourAngleRad));
+  const double azimuthRad =
+      atan2(sin(hourAngleRad),
+            cos(hourAngleRad) * sin(latitudeRad) - tan(declinationRad) * cos(latitudeRad));
+  const float azimuthDeg = fmod(radToDeg(azimuthRad) + 180.0f + 360.0f, 360.0f);
+  const float elevationDeg = radToDeg(elevationRad);
+
+  const float azimuthFromXDeg = azimuthDeg;
+  const float elevationRadF = degToRad(elevationDeg);
+  const float azimuthRadF = degToRad(azimuthFromXDeg);
+  return normalizeVec3({
+      cosf(elevationRadF) * cosf(azimuthRadF),
+      cosf(elevationRadF) * sinf(azimuthRadF),
+      sinf(elevationRadF),
+  });
 }
 
 int angleToPulseUs(float angleDeg, float minDeg, float maxDeg) {
@@ -313,6 +499,18 @@ void ensureBroadcastPeer() {
   broadcastPeerReady = addPeer(ESPNOW_BROADCAST_MAC);
 }
 
+void setHeliostatUnixTimeUtc(time_t unixTimeUtc) {
+  heliostatStartUnixTimeUtc = unixTimeUtc;
+  heliostatTimeBaseMillis = millis();
+}
+
+#if defined(DEVICE_ROLE_CONTROLLER)
+void setControllerHeliostatUnixTimeUtc(time_t unixTimeUtc) {
+  setHeliostatUnixTimeUtc(unixTimeUtc);
+  timeUpdatePending = true;
+}
+#endif
+
 #if defined(DEVICE_ROLE_REMOTE)
 int lastPanPulseUs = 0;
 int lastTiltPulseUs = 0;
@@ -322,6 +520,57 @@ void writeServos() {
   lastTiltPulseUs = quantizePulseUs(angleToPulseUs(tiltAngleDeg, TILT_MIN_DEG, TILT_MAX_DEG));
   panServo.writeMicroseconds(lastPanPulseUs);
   tiltServo.writeMicroseconds(lastTiltPulseUs);
+}
+
+void updateHeliostatTracking(uint32_t nowMs) {
+  (void)nowMs;
+
+  time_t unixTimeUtc = 0;
+  sunTimeValid = currentUnixTimeUtc(unixTimeUtc);
+  if (!sunTimeValid) {
+    autoTrackEnabled = false;
+    if (controlMode == CONTROL_MODE_AUTO_TRACK) {
+      controlMode = targetDirectionValid ? CONTROL_MODE_TARGET_CAPTURED : CONTROL_MODE_MANUAL;
+    }
+    captureTargetRequested = false;
+    return;
+  }
+
+  const Vec3 sunDirection = sunVectorFromUnixTime(unixTimeUtc);
+
+  if (captureTargetRequested) {
+    const Vec3 mirrorNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+    targetDirection = normalizeVec3(reflectVector(scaleVec3(sunDirection, -1.0f), mirrorNormal));
+    targetDirectionValid = (lengthVec3(targetDirection) > 0.0f);
+    capturedPanAngleDeg = panAngleDeg;
+    capturedTiltAngleDeg = tiltAngleDeg;
+    controlMode = targetDirectionValid ? CONTROL_MODE_TARGET_CAPTURED : CONTROL_MODE_MANUAL;
+    captureTargetRequested = false;
+    autoTrackEnabled = false;
+    if (targetDirectionValid) {
+      Serial.println("Heliostat target captured.");
+    } else {
+      Serial.println("Heliostat target capture failed.");
+    }
+  }
+
+  if (!targetDirectionValid) {
+    if (controlMode != CONTROL_MODE_MANUAL) {
+      controlMode = CONTROL_MODE_MANUAL;
+    }
+    autoTrackEnabled = false;
+    return;
+  }
+
+  if (autoTrackEnabled) {
+    const Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
+    if (lengthVec3(desiredNormal) > 0.0f) {
+      panTiltFromMirrorNormal(desiredNormal, panTargetDeg, tiltTargetDeg);
+      controlMode = CONTROL_MODE_AUTO_TRACK;
+    }
+  } else if (controlMode == CONTROL_MODE_AUTO_TRACK) {
+    controlMode = CONTROL_MODE_TARGET_CAPTURED;
+  }
 }
 
 void updateTargetsFromRemoteInput(uint32_t nowMs) {
@@ -340,14 +589,22 @@ void updateTargetsFromRemoteInput(uint32_t nowMs) {
   if (!packetReceived || (nowMs - lastRxMs) > CONTROL_LINK_TIMEOUT_MS) {
     remotePanInput = 0.0f;
     remoteTiltInput = 0.0f;
-    precisionMode = false;
     blinkActive = false;
     recenterRequested = false;
+    captureTargetRequested = false;
+    autoTrackEnabled = false;
+    if (!targetDirectionValid) {
+      controlMode = CONTROL_MODE_MANUAL;
+    }
   }
 
-  const float targetSpeedDegPerSec =
-      precisionMode ? PRECISION_TARGET_SPEED_DEG_PER_SEC : MAX_TARGET_SPEED_DEG_PER_SEC;
+  updateHeliostatTracking(nowMs);
+
   const float dt = static_cast<float>(elapsedMs) / 1000.0f;
+
+  if (controlMode == CONTROL_MODE_AUTO_TRACK) {
+    return;
+  }
 
   if (recenterRequested) {
     panTargetDeg = PAN_START_DEG;
@@ -356,10 +613,10 @@ void updateTargetsFromRemoteInput(uint32_t nowMs) {
   }
 
   panTargetDeg = constrain(
-      panTargetDeg + (applySpeedCurve(remotePanInput) * targetSpeedDegPerSec * dt),
+      panTargetDeg + (applySpeedCurve(remotePanInput) * MAX_TARGET_SPEED_DEG_PER_SEC * dt),
       PAN_MIN_DEG, PAN_MAX_DEG);
   tiltTargetDeg = constrain(
-      tiltTargetDeg + (applySpeedCurve(remoteTiltInput) * targetSpeedDegPerSec * dt),
+      tiltTargetDeg + (applySpeedCurve(remoteTiltInput) * MAX_TARGET_SPEED_DEG_PER_SEC * dt),
       TILT_MIN_DEG, TILT_MAX_DEG);
 }
 
@@ -376,9 +633,7 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   lastServoUpdateMs = nowMs;
 
-  const float slewDegPerSec =
-      precisionMode ? SERVO_PRECISION_SLEW_DEG_PER_SEC : SERVO_MAX_SLEW_DEG_PER_SEC;
-  const float maxStep = slewDegPerSec * (static_cast<float>(elapsedMs) / 1000.0f);
+  const float maxStep = SERVO_MAX_SLEW_DEG_PER_SEC * (static_cast<float>(elapsedMs) / 1000.0f);
 
   panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);
   tiltAngleDeg = stepToward(tiltAngleDeg, tiltTargetDeg, maxStep);
@@ -431,10 +686,21 @@ void sendLedPacket() {
   packet.magic = LED_PACKET_MAGIC;
   packet.type = PACKET_TYPE_CONTROL;
   packet.reserved[0] =
-      (precisionMode ? PACKET_FLAG_PRECISION : 0) | (recenterRequested ? PACKET_FLAG_RECENTER : 0);
+      (recenterRequested ? PACKET_FLAG_RECENTER : 0) |
+      (captureTargetRequested ? PACKET_FLAG_CAPTURE_TARGET : 0) |
+      (autoTrackEnabled ? PACKET_FLAG_AUTO_TRACK : 0) |
+      (timeUpdatePending ? PACKET_FLAG_TIME_UPDATE : 0);
   packet.seq = packetSequence++;
   packet.panInput = remotePanInput;
   packet.tiltInput = remoteTiltInput;
+  packet.panAngleDeg = remoteReportedPanAngleDeg;
+  packet.tiltAngleDeg = remoteReportedTiltAngleDeg;
+  packet.panTargetDeg = remoteReportedPanTargetDeg;
+  packet.tiltTargetDeg = remoteReportedTiltTargetDeg;
+  packet.capturedPanAngleDeg = remoteReportedCapturedPanAngleDeg;
+  packet.capturedTiltAngleDeg = remoteReportedCapturedTiltAngleDeg;
+  packet.unixTimeUtc =
+      timeUpdatePending ? static_cast<int64_t>(heliostatStartUnixTimeUtc) : static_cast<int64_t>(0);
 
   sendPending = true;
   const esp_err_t result =
@@ -443,6 +709,8 @@ void sendLedPacket() {
     sendPending = false;
     lastSendOk = false;
     Serial.printf("ESP-NOW send failed immediately: %d\n", static_cast<int>(result));
+  } else {
+    timeUpdatePending = false;
   }
 }
 
@@ -464,6 +732,18 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
       rememberRemotePeer(macAddr);
       sendLedPacket();
     }
+    remoteReportedControlMode = static_cast<ControlMode>(packet.reserved[0]);
+    remoteReportedTargetDirectionValid = packet.reserved[1] != 0;
+    remoteReportedSunTimeValid = packet.reserved[2] != 0;
+    remoteReportedPanAngleDeg = packet.panAngleDeg;
+    remoteReportedTiltAngleDeg = packet.tiltAngleDeg;
+    remoteReportedPanTargetDeg = packet.panTargetDeg;
+    remoteReportedTiltTargetDeg = packet.tiltTargetDeg;
+    remoteReportedCapturedPanAngleDeg = packet.capturedPanAngleDeg;
+    remoteReportedCapturedTiltAngleDeg = packet.capturedTiltAngleDeg;
+    if ((packet.reserved[0] & PACKET_FLAG_TIME_UPDATE) != 0 && packet.unixTimeUtc > 0) {
+      setHeliostatUnixTimeUtc(static_cast<time_t>(packet.unixTimeUtc));
+    }
     return;
   }
 
@@ -482,6 +762,60 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
   packetReceived = true;
   lastRxMs = millis();
 }
+
+void handleSerialCommandLine(const char* line) {
+  if (strncmp(line, "T=", 2) == 0 || strncmp(line, "t=", 2) == 0) {
+    const long long parsed = atoll(line + 2);
+    if (parsed > 0) {
+      setControllerHeliostatUnixTimeUtc(static_cast<time_t>(parsed));
+      Serial.printf("UTC time set: %lld\n", parsed);
+      sendLedPacket();
+      return;
+    }
+  }
+
+  if (strcmp(line, "TIME?") == 0 || strcmp(line, "time?") == 0) {
+    time_t unixTimeUtc = 0;
+    if (currentUnixTimeUtc(unixTimeUtc)) {
+      Serial.printf("UTC time current: %lld\n", static_cast<long long>(unixTimeUtc));
+    } else {
+      Serial.println("UTC time not set.");
+    }
+    return;
+  }
+
+  if (strcmp(line, "HELP") == 0 || strcmp(line, "help") == 0) {
+    Serial.println("Serial commands:");
+    Serial.println("  T=<unix_utc_seconds>  set UTC time");
+    Serial.println("  TIME?                 show current UTC time");
+    return;
+  }
+
+  if (line[0] != '\0') {
+    Serial.printf("Unknown serial command: %s\n", line);
+  }
+}
+
+void handleControllerSerial() {
+  while (Serial.available() > 0) {
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') {
+      continue;
+    }
+
+    if (ch == '\n') {
+      serialCommandBuffer[serialCommandLength] = '\0';
+      handleSerialCommandLine(serialCommandBuffer);
+      serialCommandLength = 0;
+      serialCommandBuffer[0] = '\0';
+      continue;
+    }
+
+    if (serialCommandLength + 1 < SERIAL_COMMAND_BUFFER_SIZE) {
+      serialCommandBuffer[serialCommandLength++] = ch;
+    }
+  }
+}
 #else
 void sendAnnouncePacket(uint32_t nowMs) {
   if (!broadcastPeerReady || (nowMs - lastAnnounceMs) < REMOTE_ANNOUNCE_MS) {
@@ -493,7 +827,17 @@ void sendAnnouncePacket(uint32_t nowMs) {
   EspNowPacket packet{};
   packet.magic = LED_PACKET_MAGIC;
   packet.type = PACKET_TYPE_ANNOUNCE;
+  packet.reserved[0] = static_cast<uint8_t>(controlMode);
+  packet.reserved[1] = targetDirectionValid ? 1 : 0;
+  packet.reserved[2] = sunTimeValid ? 1 : 0;
   packet.seq = packetSequence++;
+  packet.panAngleDeg = panAngleDeg;
+  packet.tiltAngleDeg = tiltAngleDeg;
+  packet.panTargetDeg = panTargetDeg;
+  packet.tiltTargetDeg = tiltTargetDeg;
+  packet.capturedPanAngleDeg = capturedPanAngleDeg;
+  packet.capturedTiltAngleDeg = capturedTiltAngleDeg;
+  packet.unixTimeUtc = static_cast<int64_t>(heliostatStartUnixTimeUtc);
 
   const esp_err_t result =
       esp_now_send(ESPNOW_BROADCAST_MAC, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
@@ -514,11 +858,15 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
     return;
   }
 
-  precisionMode = (packet.reserved[0] & PACKET_FLAG_PRECISION) != 0;
   recenterRequested = (packet.reserved[0] & PACKET_FLAG_RECENTER) != 0;
-  blinkActive = precisionMode;
+  captureTargetRequested = (packet.reserved[0] & PACKET_FLAG_CAPTURE_TARGET) != 0;
+  autoTrackEnabled = (packet.reserved[0] & PACKET_FLAG_AUTO_TRACK) != 0;
+  blinkActive = false;
   remotePanInput = constrain(packet.panInput, -1.0f, 1.0f);
   remoteTiltInput = constrain(packet.tiltInput, -1.0f, 1.0f);
+  if ((packet.reserved[0] & PACKET_FLAG_TIME_UPDATE) != 0 && packet.unixTimeUtc > 0) {
+    setHeliostatUnixTimeUtc(static_cast<time_t>(packet.unixTimeUtc));
+  }
   packetReceived = true;
   lastRxMs = millis();
 }
@@ -539,11 +887,19 @@ void updateLedFromXbox(uint32_t nowMs) {
   BLEControlsEvent state;
   controller.readControls(state);
 
+  const bool capturePressed = state.buttonX && !lastCaptureButton;
+  const bool autoPressed = state.buttonY && !lastAutoButton;
+  lastCaptureButton = state.buttonX;
+  lastAutoButton = state.buttonY;
+
   remotePanInput = applyDeadzone(-state.leftStickX);
   remoteTiltInput = applyDeadzone(-state.leftStickY);
-  precisionMode = state.buttonB || state.leftBumper;
   recenterRequested = state.buttonA;
-  blinkActive = precisionMode;
+  captureTargetRequested = capturePressed;
+  if (autoPressed) {
+    autoTrackEnabled = !autoTrackEnabled;
+  }
+  blinkActive = false;
 
   panAngleDeg = constrain(
       PAN_START_DEG + (remotePanInput * ((PAN_MAX_DEG - PAN_MIN_DEG) * 0.5f)),
@@ -574,12 +930,20 @@ void printStatus(uint32_t nowMs) {
     BLEControlsEvent state;
     controller.readControls(state);
     Serial.printf(
-        "ROLE=controller | xbox=ok | peer=%s | tx=%s | precision=%s | pan_in=%+.2f | tilt_in=%+.2f | lx=%+.2f ly=%+.2f\n",
+        "ROLE=controller | xbox=ok | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f/%7.3f d=%+7.3f cap=%7.3f | tilt=%7.3f/%7.3f d=%+7.3f cap=%7.3f | target=%s | sun_time=%s | time_x=%.1f\n",
         espNowPeerReady ? "ok" : "missing",
         lastSendOk ? "ok" : "pending",
-        precisionMode ? "on" : "off",
-        remotePanInput, remoteTiltInput,
-        state.leftStickX, state.leftStickY);
+        autoTrackEnabled ? "on" : "off",
+        controlModeName(remoteReportedControlMode),
+        remoteReportedPanAngleDeg, remoteReportedPanTargetDeg,
+        remoteReportedPanTargetDeg - remoteReportedCapturedPanAngleDeg,
+        remoteReportedCapturedPanAngleDeg,
+        remoteReportedTiltAngleDeg, remoteReportedTiltTargetDeg,
+        remoteReportedTiltTargetDeg - remoteReportedCapturedTiltAngleDeg,
+        remoteReportedCapturedTiltAngleDeg,
+        remoteReportedTargetDirectionValid ? "ok" : "missing",
+        remoteReportedSunTimeValid ? "ok" : "missing",
+        HELIOSTAT_TIME_SCALE);
   } else {
     const uint32_t uptimeSec = (millis() - bootMs) / 1000;
     Serial.printf(
@@ -591,11 +955,14 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | rx=%s | age_ms=%lu | step_us=%d | pan_us=%d | tilt_us=%d\n",
+      "ROLE=remote | mode=%u | rx=%s | age_ms=%lu | step_us=%d | pan_us=%d | tilt_us=%d | sun_time=%s | target=%s\n",
+      static_cast<unsigned>(controlMode),
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
       SERVO_COMMAND_STEP_US,
-      lastPanPulseUs, lastTiltPulseUs);
+      lastPanPulseUs, lastTiltPulseUs,
+      sunTimeValid ? "ok" : "missing",
+      targetDirectionValid ? "ok" : "missing");
 #endif
 }
 
@@ -665,7 +1032,8 @@ void setup() {
   Serial.println("Remote peer MAC=auto");
   Serial.printf("CLEAR_XBOX_BONDS_ON_BOOT=%s\n", CLEAR_XBOX_BONDS_ON_BOOT ? "true" : "false");
   Serial.println("Xbox node: left stick = target angle movement, button A = recenter.");
-  Serial.println("Precision mode: hold B or LB for the slowest movement tests.");
+  Serial.println("Button X captures the reflected target. Button Y toggles heliostat auto-track.");
+  Serial.println("Serial: T=<unix_utc_seconds> sets UTC time, TIME? shows current UTC time.");
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
 #else
   Serial.println("Remote node ready.");
@@ -673,8 +1041,10 @@ void setup() {
   Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
                 PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
   Serial.printf("Servo command step: %d us\n", SERVO_COMMAND_STEP_US);
-  Serial.printf("Slew rates: normal=%.2f deg/s | precision=%.2f deg/s\n",
-                SERVO_MAX_SLEW_DEG_PER_SEC, SERVO_PRECISION_SLEW_DEG_PER_SEC);
+  Serial.printf("Slew rate: %.2f deg/s\n", SERVO_MAX_SLEW_DEG_PER_SEC);
+  Serial.printf("Heliostat lat=%.4f lon=%.4f start_unix=%lld\n",
+                HELIOSTAT_LATITUDE_DEG, HELIOSTAT_LONGITUDE_DEG,
+                static_cast<long long>(heliostatStartUnixTimeUtc));
   Serial.printf("Runtime status logs: %s\n", ENABLE_RUNTIME_STATUS_LOGS ? "on" : "off");
   Serial.println("Use a dedicated 5-6V supply for MG996R servos and share GND with the ESP32.");
 #endif
@@ -682,6 +1052,9 @@ void setup() {
 
 void loop() {
   const uint32_t nowMs = millis();
+#if defined(DEVICE_ROLE_CONTROLLER)
+  handleControllerSerial();
+#endif
   updateLedFromXbox(nowMs);
 #if defined(DEVICE_ROLE_REMOTE)
   updateTargetsFromRemoteInput(nowMs);
