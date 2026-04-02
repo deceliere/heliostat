@@ -5,9 +5,9 @@ namespace {
 
 constexpr int SERVO_PIN = 5;
 constexpr int SERVO_MIN_DEG = 0;
-constexpr int SERVO_MAX_DEG = 180;
-constexpr int SERVO_MIN_PULSE_US = 1000;
-constexpr int SERVO_MAX_PULSE_US = 2000;
+constexpr int SERVO_MAX_DEG = 160;
+constexpr int SERVO_MIN_PULSE_US = 500;
+constexpr int SERVO_MAX_PULSE_US = 2500;
 constexpr int SERVO_FREQUENCY_HZ = 300;
 constexpr float DEFAULT_SPEED_DEG_PER_SEC = 30.0f;
 constexpr uint32_t LOOP_DELAY_MS = 20;
@@ -65,6 +65,8 @@ void updateSweep() {
   }
 
   panServo.write(static_cast<int>(lroundf(currentAngleDeg)));
+  Serial.print("Angle: ");
+  Serial.println(currentAngleDeg, 1);
 }
 
 }  // namespace
