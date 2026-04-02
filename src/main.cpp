@@ -32,13 +32,11 @@ constexpr float TILT_START_DEG = 90.0f;
 
 constexpr float STICK_DEADZONE = 0.12f;
 constexpr float MAX_TARGET_SPEED_DEG_PER_SEC = 45.0f;
-constexpr float PRECISION_TARGET_SPEED_DEG_PER_SEC = 4.0f;
+constexpr float PRECISION_TARGET_SPEED_DEG_PER_SEC = 10.0f;
 constexpr float SERVO_MAX_SLEW_DEG_PER_SEC = 60.0f;
 constexpr float SERVO_PRECISION_SLEW_DEG_PER_SEC = 0.6f;
-constexpr float SERVO_SWEEP_TEST_SPEED_DEG_PER_SEC = 0.25f;
 constexpr uint32_t CONTROL_UPDATE_MS = 5;
 constexpr uint32_t STATUS_PRINT_MS = 2000;
-constexpr uint32_t TEST_STATUS_PRINT_MS = 250;
 constexpr uint32_t CONTROL_LINK_TIMEOUT_MS = 250;
 constexpr bool ENABLE_RUNTIME_STATUS_LOGS = true;
 constexpr bool WAIT_FOR_SERIAL = false;
@@ -53,7 +51,6 @@ constexpr int TILT_SERVO_PIN = 6;
 constexpr int SERVO_MIN_PULSE_US = 500 ;
 constexpr int SERVO_MAX_PULSE_US = 2500;
 constexpr int SERVO_COMMAND_STEP_US = 1;
-constexpr uint32_t SERVO_STEP_CALIBRATION_HOLD_MS = 5000;
 constexpr int SERVO_FREQUENCY_HZ = 300;
 constexpr float SPEED_CURVE_EXPONENT = 2.0f;
 
@@ -70,8 +67,6 @@ enum PacketType : uint8_t {
 
 constexpr uint8_t PACKET_FLAG_PRECISION = 0x01;
 constexpr uint8_t PACKET_FLAG_RECENTER = 0x02;
-constexpr uint8_t PACKET_FLAG_SWEEP_TEST = 0x04;
-constexpr uint8_t PACKET_FLAG_STEP_CALIBRATION = 0x08;
 
 struct EspNowPacket {
   uint32_t magic;
@@ -83,10 +78,6 @@ struct EspNowPacket {
 };
 
 constexpr uint32_t LED_PACKET_MAGIC = 0x48454C31;  // "HEL1"
-constexpr int SERVO_STEP_CALIBRATION_VALUES_US[] = {50, 25, 10, 5, 1};
-constexpr size_t SERVO_STEP_CALIBRATION_COUNT =
-    sizeof(SERVO_STEP_CALIBRATION_VALUES_US) / sizeof(SERVO_STEP_CALIBRATION_VALUES_US[0]);
-
 BLEController controller;
 Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ800);
 #if defined(DEVICE_ROLE_REMOTE)
@@ -113,7 +104,6 @@ uint32_t bootMs = 0;
 uint32_t packetSequence = 0;
 uint32_t lastRxMs = 0;
 uint32_t lastAnnounceMs = 0;
-uint32_t lastStepCalibrationChangeMs = 0;
 
 bool xboxConnected = false;
 bool espNowPeerReady = false;
@@ -123,15 +113,10 @@ bool broadcastPeerReady = false;
 bool blinkActive = false;
 bool precisionMode = false;
 bool recenterRequested = false;
-bool sweepTestMode = false;
-bool stepCalibrationMode = false;
 bool sendPending = false;
-int currentServoCommandStepUs = SERVO_COMMAND_STEP_US;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
-bool lastToggleTestButton = false;
-bool lastToggleCalibrationButton = false;
 #endif
 
 float applyDeadzone(float value) {
@@ -159,14 +144,14 @@ int angleToPulseUs(float angleDeg, float minDeg, float maxDeg) {
 }
 
 int quantizePulseUs(int pulseUs) {
-  if (currentServoCommandStepUs <= 1) {
+  if (SERVO_COMMAND_STEP_US <= 1) {
     return constrain(pulseUs, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
   }
 
   const int offset = pulseUs - SERVO_MIN_PULSE_US;
   const int quantizedOffset =
-      static_cast<int>(lroundf(static_cast<float>(offset) / currentServoCommandStepUs)) *
-      currentServoCommandStepUs;
+      static_cast<int>(lroundf(static_cast<float>(offset) / SERVO_COMMAND_STEP_US)) *
+      SERVO_COMMAND_STEP_US;
   return constrain(SERVO_MIN_PULSE_US + quantizedOffset, SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
 }
 
@@ -339,49 +324,6 @@ void writeServos() {
   tiltServo.writeMicroseconds(lastTiltPulseUs);
 }
 
-void updateServoStepCalibration(uint32_t nowMs) {
-  if (!stepCalibrationMode) {
-    currentServoCommandStepUs = SERVO_COMMAND_STEP_US;
-    lastStepCalibrationChangeMs = 0;
-    return;
-  }
-
-  if (lastStepCalibrationChangeMs == 0) {
-    lastStepCalibrationChangeMs = nowMs;
-    currentServoCommandStepUs = SERVO_STEP_CALIBRATION_VALUES_US[0];
-    return;
-  }
-
-  const uint32_t elapsedMs = nowMs - lastStepCalibrationChangeMs;
-  const size_t index = (elapsedMs / SERVO_STEP_CALIBRATION_HOLD_MS) % SERVO_STEP_CALIBRATION_COUNT;
-  currentServoCommandStepUs = SERVO_STEP_CALIBRATION_VALUES_US[index];
-}
-
-void updateTargetsForSweepTest(float dt) {
-  static bool panIncreasing = true;
-  static bool tiltIncreasing = false;
-
-  const float step = SERVO_SWEEP_TEST_SPEED_DEG_PER_SEC * dt;
-  panTargetDeg += panIncreasing ? step : -step;
-  tiltTargetDeg += tiltIncreasing ? step : -step;
-
-  if (panTargetDeg >= PAN_MAX_DEG) {
-    panTargetDeg = PAN_MAX_DEG;
-    panIncreasing = false;
-  } else if (panTargetDeg <= PAN_MIN_DEG) {
-    panTargetDeg = PAN_MIN_DEG;
-    panIncreasing = true;
-  }
-
-  if (tiltTargetDeg >= TILT_MAX_DEG) {
-    tiltTargetDeg = TILT_MAX_DEG;
-    tiltIncreasing = false;
-  } else if (tiltTargetDeg <= TILT_MIN_DEG) {
-    tiltTargetDeg = TILT_MIN_DEG;
-    tiltIncreasing = true;
-  }
-}
-
 void updateTargetsFromRemoteInput(uint32_t nowMs) {
   static uint32_t lastMotionUpdateMs = 0;
   if (lastMotionUpdateMs == 0) {
@@ -401,24 +343,11 @@ void updateTargetsFromRemoteInput(uint32_t nowMs) {
     precisionMode = false;
     blinkActive = false;
     recenterRequested = false;
-    sweepTestMode = false;
-    stepCalibrationMode = false;
   }
-
-  updateServoStepCalibration(nowMs);
 
   const float targetSpeedDegPerSec =
       precisionMode ? PRECISION_TARGET_SPEED_DEG_PER_SEC : MAX_TARGET_SPEED_DEG_PER_SEC;
   const float dt = static_cast<float>(elapsedMs) / 1000.0f;
-
-  if (sweepTestMode || stepCalibrationMode) {
-    precisionMode = true;
-    blinkActive = true;
-    remotePanInput = 0.0f;
-    remoteTiltInput = 0.0f;
-    updateTargetsForSweepTest(dt);
-    return;
-  }
 
   if (recenterRequested) {
     panTargetDeg = PAN_START_DEG;
@@ -501,10 +430,8 @@ void sendLedPacket() {
   EspNowPacket packet{};
   packet.magic = LED_PACKET_MAGIC;
   packet.type = PACKET_TYPE_CONTROL;
-  packet.reserved[0] = (precisionMode ? PACKET_FLAG_PRECISION : 0) |
-                       (recenterRequested ? PACKET_FLAG_RECENTER : 0) |
-                       (sweepTestMode ? PACKET_FLAG_SWEEP_TEST : 0) |
-                       (stepCalibrationMode ? PACKET_FLAG_STEP_CALIBRATION : 0);
+  packet.reserved[0] =
+      (precisionMode ? PACKET_FLAG_PRECISION : 0) | (recenterRequested ? PACKET_FLAG_RECENTER : 0);
   packet.seq = packetSequence++;
   packet.panInput = remotePanInput;
   packet.tiltInput = remoteTiltInput;
@@ -589,9 +516,7 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
 
   precisionMode = (packet.reserved[0] & PACKET_FLAG_PRECISION) != 0;
   recenterRequested = (packet.reserved[0] & PACKET_FLAG_RECENTER) != 0;
-  sweepTestMode = (packet.reserved[0] & PACKET_FLAG_SWEEP_TEST) != 0;
-  stepCalibrationMode = (packet.reserved[0] & PACKET_FLAG_STEP_CALIBRATION) != 0;
-  blinkActive = precisionMode || sweepTestMode || stepCalibrationMode;
+  blinkActive = precisionMode;
   remotePanInput = constrain(packet.panInput, -1.0f, 1.0f);
   remoteTiltInput = constrain(packet.tiltInput, -1.0f, 1.0f);
   packetReceived = true;
@@ -614,27 +539,11 @@ void updateLedFromXbox(uint32_t nowMs) {
   BLEControlsEvent state;
   controller.readControls(state);
 
-  if (state.buttonY && !lastToggleTestButton) {
-    sweepTestMode = !sweepTestMode;
-    if (sweepTestMode) {
-      stepCalibrationMode = false;
-    }
-  }
-  lastToggleTestButton = state.buttonY;
-
-  if (state.buttonX && !lastToggleCalibrationButton) {
-    stepCalibrationMode = !stepCalibrationMode;
-    if (stepCalibrationMode) {
-      sweepTestMode = false;
-    }
-  }
-  lastToggleCalibrationButton = state.buttonX;
-
   remotePanInput = applyDeadzone(-state.leftStickX);
   remoteTiltInput = applyDeadzone(-state.leftStickY);
   precisionMode = state.buttonB || state.leftBumper;
   recenterRequested = state.buttonA;
-  blinkActive = precisionMode || sweepTestMode || stepCalibrationMode;
+  blinkActive = precisionMode;
 
   panAngleDeg = constrain(
       PAN_START_DEG + (remotePanInput * ((PAN_MAX_DEG - PAN_MIN_DEG) * 0.5f)),
@@ -650,13 +559,12 @@ void updateLedFromXbox(uint32_t nowMs) {
 }
 
 void printStatus(uint32_t nowMs) {
-  const bool logsEnabled = ENABLE_RUNTIME_STATUS_LOGS || sweepTestMode || stepCalibrationMode;
+  const bool logsEnabled = ENABLE_RUNTIME_STATUS_LOGS;
   if (!logsEnabled) {
     return;
   }
 
-  const uint32_t printIntervalMs = sweepTestMode ? TEST_STATUS_PRINT_MS : STATUS_PRINT_MS;
-  if ((nowMs - lastStatusPrintMs) < printIntervalMs) {
+  if ((nowMs - lastStatusPrintMs) < STATUS_PRINT_MS) {
     return;
   }
   lastStatusPrintMs = nowMs;
@@ -686,7 +594,7 @@ void printStatus(uint32_t nowMs) {
       "ROLE=remote | rx=%s | age_ms=%lu | step_us=%d | pan_us=%d | tilt_us=%d\n",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
-      currentServoCommandStepUs,
+      SERVO_COMMAND_STEP_US,
       lastPanPulseUs, lastTiltPulseUs);
 #endif
 }
@@ -758,8 +666,6 @@ void setup() {
   Serial.printf("CLEAR_XBOX_BONDS_ON_BOOT=%s\n", CLEAR_XBOX_BONDS_ON_BOOT ? "true" : "false");
   Serial.println("Xbox node: left stick = target angle movement, button A = recenter.");
   Serial.println("Precision mode: hold B or LB for the slowest movement tests.");
-  Serial.println("Button Y toggles autonomous remote sweep test.");
-  Serial.println("Button X toggles automatic step calibration: 50, 25, 10, 5, 1 us.");
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
 #else
   Serial.println("Remote node ready.");
@@ -769,7 +675,6 @@ void setup() {
   Serial.printf("Servo command step: %d us\n", SERVO_COMMAND_STEP_US);
   Serial.printf("Slew rates: normal=%.2f deg/s | precision=%.2f deg/s\n",
                 SERVO_MAX_SLEW_DEG_PER_SEC, SERVO_PRECISION_SLEW_DEG_PER_SEC);
-  Serial.printf("Sweep test speed: %.2f deg/s\n", SERVO_SWEEP_TEST_SPEED_DEG_PER_SEC);
   Serial.printf("Runtime status logs: %s\n", ENABLE_RUNTIME_STATUS_LOGS ? "on" : "off");
   Serial.println("Use a dedicated 5-6V supply for MG996R servos and share GND with the ESP32.");
 #endif
