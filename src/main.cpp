@@ -8,6 +8,9 @@
 #include <esp_wifi.h>
 #include <time.h>
 
+// le miroir doit etre oriente SUD et a l'horizontal pour que les angles soient corrects, sinon il faudra faire des ajustements dans les calculs d'angles
+
+
 namespace {
 
 #if defined(DEVICE_ROLE_CONTROLLER) && defined(DEVICE_ROLE_REMOTE)
@@ -247,7 +250,8 @@ Vec3 reflectVector(const Vec3& incoming, const Vec3& normal) {
 }
 
 Vec3 mirrorNormalFromPanTilt(float panDeg, float tiltDeg) {
-  const float panRad = degToRad(panDeg - 90.0f);
+  const float panAzimuthDeg = panDeg + 90.0f;
+  const float panRad = degToRad(panAzimuthDeg);
   const float tiltRad = degToRad(tiltDeg - 90.0f);
   const float cosTilt = cosf(tiltRad);
   return normalizeVec3({
@@ -259,7 +263,12 @@ Vec3 mirrorNormalFromPanTilt(float panDeg, float tiltDeg) {
 
 void panTiltFromMirrorNormal(const Vec3& normal, float& panDeg, float& tiltDeg) {
   const Vec3 normalized = normalizeVec3(normal);
-  panDeg = constrain(radToDeg(atan2f(normalized.y, normalized.x)) + 90.0f, PAN_MIN_DEG, PAN_MAX_DEG);
+  float panAzimuthDeg = radToDeg(atan2f(normalized.y, normalized.x));
+  if (panAzimuthDeg < 0.0f) {
+    panAzimuthDeg += 360.0f;
+  }
+  const float panModelDeg = panAzimuthDeg - 90.0f;
+  panDeg = constrain(panModelDeg, PAN_MIN_DEG, PAN_MAX_DEG);
   tiltDeg = constrain(radToDeg(asinf(normalized.z)) + 90.0f, TILT_MIN_DEG, TILT_MAX_DEG);
 }
 
@@ -1080,6 +1089,7 @@ void setup() {
   Serial.println("Remote peer MAC=auto");
   Serial.printf("CLEAR_XBOX_BONDS_ON_BOOT=%s\n", CLEAR_XBOX_BONDS_ON_BOOT ? "true" : "false");
   Serial.println("Xbox node: left stick = target angle movement, button A = recenter.");
+  Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
   Serial.println("Button X captures the reflected target. Button Y toggles heliostat auto-track.");
   Serial.println("Serial: T=<unix_utc_seconds>, S=<scale>, TIME?, SCALE?.");
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
@@ -1088,6 +1098,7 @@ void setup() {
   Serial.println("Auto-pairing enabled: power the controller ESP32 and it will lock onto this remote.");
   Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
                 PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
+  Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
   Serial.printf("Tilt model/servo: model %.1f deg -> servo %.1f deg | offset=%+.1f deg\n",
                 TILT_START_DEG, TILT_SERVO_AT_MODEL_HORIZON_DEG, TILT_SERVO_OFFSET_DEG);
   Serial.printf("Servo command step: %d us\n", SERVO_COMMAND_STEP_US);
