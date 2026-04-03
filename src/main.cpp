@@ -26,13 +26,15 @@ constexpr int STATUS_LED_PIN = 38;
 constexpr int STATUS_LED_COUNT = 1;
 constexpr uint8_t LED_BRIGHTNESS = 32;
 
-constexpr float PAN_MIN_DEG = 15.0f;
-constexpr float PAN_MAX_DEG = 165.0f;
+constexpr float PAN_MIN_DEG = 0.0f;
+constexpr float PAN_MAX_DEG = 180.0f;
 constexpr float PAN_START_DEG = 90.0f;
+constexpr float PAN_MODEL_SIGN = -1.0f;
 
 constexpr float TILT_MIN_DEG = 0.0f;
 constexpr float TILT_MAX_DEG = 180.0f;
 constexpr float TILT_START_DEG = 90.0f;
+constexpr float TILT_MODEL_SIGN = -1.0f;
 constexpr float TILT_SERVO_OFFSET_DEG = 78.0f;
 constexpr float TILT_SERVO_MIN_DEG = 00.0f;
 constexpr float TILT_SERVO_MAX_DEG = 180.0f;
@@ -250,9 +252,9 @@ Vec3 reflectVector(const Vec3& incoming, const Vec3& normal) {
 }
 
 Vec3 mirrorNormalFromPanTilt(float panDeg, float tiltDeg) {
-  const float panAzimuthDeg = panDeg + 90.0f;
+  const float panAzimuthDeg = (PAN_MODEL_SIGN * (panDeg - 90.0f)) + 180.0f;
   const float panRad = degToRad(panAzimuthDeg);
-  const float tiltRad = degToRad(tiltDeg - 90.0f);
+  const float tiltRad = degToRad(TILT_MODEL_SIGN * (tiltDeg - 90.0f));
   const float cosTilt = cosf(tiltRad);
   return normalizeVec3({
       cosTilt * cosf(panRad),
@@ -267,9 +269,10 @@ void panTiltFromMirrorNormal(const Vec3& normal, float& panDeg, float& tiltDeg) 
   if (panAzimuthDeg < 0.0f) {
     panAzimuthDeg += 360.0f;
   }
-  const float panModelDeg = panAzimuthDeg - 90.0f;
+  const float panModelDeg = 90.0f + (PAN_MODEL_SIGN * (panAzimuthDeg - 180.0f));
   panDeg = constrain(panModelDeg, PAN_MIN_DEG, PAN_MAX_DEG);
-  tiltDeg = constrain(radToDeg(asinf(normalized.z)) + 90.0f, TILT_MIN_DEG, TILT_MAX_DEG);
+  const float tiltModelDeg = 90.0f + (TILT_MODEL_SIGN * radToDeg(asinf(normalized.z)));
+  tiltDeg = constrain(tiltModelDeg, TILT_MIN_DEG, TILT_MAX_DEG);
 }
 
 bool currentUnixTimeUtc(time_t& unixTimeUtc) {
@@ -595,8 +598,12 @@ void updateHeliostatTracking(uint32_t nowMs) {
   }
 
   if (autoTrackEnabled) {
-    const Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
+    Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
     if (lengthVec3(desiredNormal) > 0.0f) {
+      const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+      if (dotVec3(currentNormal, desiredNormal) < 0.0f) {
+        desiredNormal = scaleVec3(desiredNormal, -1.0f);
+      }
       panTiltFromMirrorNormal(desiredNormal, panTargetDeg, tiltTargetDeg);
       controlMode = CONTROL_MODE_AUTO_TRACK;
     }
