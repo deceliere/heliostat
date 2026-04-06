@@ -815,10 +815,6 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
   }
 
   if (packet.type == PACKET_TYPE_ANNOUNCE) {
-    if (!espNowPeerReady) {
-      rememberRemotePeer(macAddr);
-      sendLedPacket();
-    }
     remoteReportedControlMode = static_cast<ControlMode>(packet.reserved[0]);
     remoteReportedTargetDirectionValid = packet.reserved[1] != 0;
     remoteReportedSunTimeValid = packet.reserved[2] != 0;
@@ -835,6 +831,13 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
     remoteReportedTiltPulseUs = packet.tiltPulseUs;
     remoteReportedUnixTimeUtc = static_cast<time_t>(packet.unixTimeUtc);
     remoteReportedAutoTrackStartUnixTimeUtc = static_cast<time_t>(packet.autoTrackStartUnixTimeUtc);
+    if (!controller.isConnected()) {
+      autoTrackEnabled = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
+    }
+    if (!espNowPeerReady) {
+      rememberRemotePeer(macAddr);
+      sendLedPacket();
+    }
     if ((packet.reserved[0] & PACKET_FLAG_TIME_UPDATE) != 0 && packet.unixTimeUtc > 0) {
       setHeliostatUnixTimeUtc(static_cast<time_t>(packet.unixTimeUtc));
     }
@@ -1133,6 +1136,7 @@ void printStatus(uint32_t nowMs) {
 void onControllerConnect(NimBLEAddress address) {
   xboxConnected = true;
   blinkActive = false;
+  autoTrackEnabled = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
   applyLedFromPanTilt(millis());
   sendLedPacket();
   Serial.printf("Xbox connected: %s\n", address.toString().c_str());
