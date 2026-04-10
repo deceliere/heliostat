@@ -30,6 +30,8 @@ async function postJson(url, payload) {
   return response.json();
 }
 
+let manualPublishTimer = null;
+
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) {
@@ -46,37 +48,80 @@ function bindControls() {
   const tiltRate = document.getElementById("tilt-rate");
   const precision = document.getElementById("precision");
 
+  const readManualCommand = () => ({
+    pan_rate: Number(panRate?.value ?? 0),
+    tilt_rate: Number(tiltRate?.value ?? 0),
+    precision: Boolean(precision?.checked),
+  });
+
+  const stopManualPublishing = async () => {
+    if (manualPublishTimer !== null) {
+      window.clearInterval(manualPublishTimer);
+      manualPublishTimer = null;
+    }
+
+    const command = readManualCommand();
+    if (command.pan_rate !== 0 || command.tilt_rate !== 0) {
+      panRate.value = "0";
+      tiltRate.value = "0";
+      await postJson("/api/cmd/manual", { ...command, pan_rate: 0, tilt_rate: 0 });
+    }
+  };
+
+  const startManualPublishing = async () => {
+    const publish = async () => {
+      await postJson("/api/cmd/manual", readManualCommand());
+    };
+
+    if (manualPublishTimer === null) {
+      manualPublishTimer = window.setInterval(() => {
+        publish().catch((error) => {
+          console.error(error);
+        });
+      }, 100);
+    }
+
+    await postJson("/api/cmd/mode", { mode: "manual" });
+    await publish();
+    await refreshUi();
+  };
+
   manualButton?.addEventListener("click", async () => {
+    await stopManualPublishing();
     await postJson("/api/cmd/mode", { mode: "manual" });
     await refreshUi();
   });
 
   autoButton?.addEventListener("click", async () => {
+    await stopManualPublishing();
     await postJson("/api/cmd/mode", { mode: "auto" });
     await refreshUi();
   });
 
   captureButton?.addEventListener("click", async () => {
+    await stopManualPublishing();
     await postJson("/api/cmd/action", { action: "capture_target" });
     await refreshUi();
   });
 
   recenterButton?.addEventListener("click", async () => {
+    await stopManualPublishing();
     await postJson("/api/cmd/action", { action: "recenter" });
     await refreshUi();
   });
 
-  const publishManual = async () => {
-    await postJson("/api/cmd/manual", {
-      pan_rate: Number(panRate?.value ?? 0),
-      tilt_rate: Number(tiltRate?.value ?? 0),
-      precision: Boolean(precision?.checked),
-    });
-  };
+  panRate?.addEventListener("input", startManualPublishing);
+  tiltRate?.addEventListener("input", startManualPublishing);
+  precision?.addEventListener("change", startManualPublishing);
 
-  panRate?.addEventListener("change", publishManual);
-  tiltRate?.addEventListener("change", publishManual);
-  precision?.addEventListener("change", publishManual);
+  panRate?.addEventListener("change", stopManualPublishing);
+  tiltRate?.addEventListener("change", stopManualPublishing);
+
+  window.addEventListener("pointerup", () => {
+    stopManualPublishing().catch((error) => {
+      console.error(error);
+    });
+  });
 }
 
 async function refreshUi() {
