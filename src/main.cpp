@@ -76,7 +76,7 @@ constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
 constexpr time_t HELIOSTAT_START_UNIX_TIME_UTC = 0;
 constexpr float HELIOSTAT_TIME_SCALE = 1.0f;
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
-constexpr uint32_t REMOTE_STATE_PUBLISH_MS = 500;
+constexpr uint32_t REMOTE_STATE_PUBLISH_MS = 150;
 constexpr uint32_t REMOTE_WIFI_RETRY_MS = 10000;
 constexpr uint32_t REMOTE_MQTT_RETRY_MS = 5000;
 #ifndef REMOTE_WIFI_SSID
@@ -763,7 +763,13 @@ void handleRemoteActionCommand(const JsonDocument& doc) {
   if (strcmp(action, "capture_target") == 0) {
     captureTargetRequested = true;
   } else if (strcmp(action, "recenter") == 0) {
-    recenterRequested = true;
+    autoTrackEnabled = false;
+    controlMode = CONTROL_MODE_MANUAL;
+    remotePanInput = 0.0f;
+    remoteTiltInput = 0.0f;
+    recenterRequested = false;
+    panTargetDeg = PAN_START_DEG;
+    tiltTargetDeg = TILT_START_DEG;
   } else if (strcmp(action, "print_diag") == 0) {
     printRemoteTrackingDiagnostic();
     publishRemoteDiag("print_diag");
@@ -958,8 +964,6 @@ void updateTargetsFromRemoteInput(uint32_t nowMs) {
   if (!packetReceived || (nowMs - lastRxMs) > CONTROL_LINK_TIMEOUT_MS) {
     remotePanInput = 0.0f;
     remoteTiltInput = 0.0f;
-    recenterRequested = false;
-    captureTargetRequested = false;
     precisionManualMode = false;
     if (!targetDirectionValid && !autoTrackEnabled) {
       controlMode = CONTROL_MODE_MANUAL;

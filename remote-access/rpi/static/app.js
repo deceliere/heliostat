@@ -134,4 +134,4 @@ async function refreshUi() {
 
 bindControls();
 refreshUi();
-setInterval(refreshUi, 1000);
+setInterval(refreshUi, 250);
