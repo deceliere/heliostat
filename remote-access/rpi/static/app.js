@@ -44,6 +44,7 @@ function bindControls() {
   const autoButton = document.getElementById("mode-auto");
   const captureButton = document.getElementById("capture-target");
   const recenterButton = document.getElementById("recenter");
+  const stopManualButton = document.getElementById("stop-manual");
   const panRate = document.getElementById("pan-rate");
   const tiltRate = document.getElementById("tilt-rate");
   const precision = document.getElementById("precision");
@@ -60,12 +61,9 @@ function bindControls() {
       manualPublishTimer = null;
     }
 
-    const command = readManualCommand();
-    if (command.pan_rate !== 0 || command.tilt_rate !== 0) {
-      panRate.value = "0";
-      tiltRate.value = "0";
-      await postJson("/api/cmd/manual", { ...command, pan_rate: 0, tilt_rate: 0 });
-    }
+    panRate.value = "0";
+    tiltRate.value = "0";
+    await postJson("/api/cmd/manual", { ...readManualCommand(), pan_rate: 0, tilt_rate: 0 });
   };
 
   const startManualPublishing = async () => {
@@ -110,18 +108,14 @@ function bindControls() {
     await refreshUi();
   });
 
+  stopManualButton?.addEventListener("click", async () => {
+    await stopManualPublishing();
+    await refreshUi();
+  });
+
   panRate?.addEventListener("input", startManualPublishing);
   tiltRate?.addEventListener("input", startManualPublishing);
   precision?.addEventListener("change", startManualPublishing);
-
-  panRate?.addEventListener("change", stopManualPublishing);
-  tiltRate?.addEventListener("change", stopManualPublishing);
-
-  window.addEventListener("pointerup", () => {
-    stopManualPublishing().catch((error) => {
-      console.error(error);
-    });
-  });
 }
 
 async function refreshUi() {
@@ -140,4 +134,4 @@ async function refreshUi() {
 
 bindControls();
 refreshUi();
-setInterval(refreshUi, 5000);
+setInterval(refreshUi, 1000);
