@@ -50,8 +50,20 @@ def topic(suffix: str) -> str:
     return f"{MQTT_BASE_TOPIC}/{suffix}"
 
 
+def mqtt_reason_code_is_success(reason_code) -> bool:
+    is_failure = getattr(reason_code, "is_failure", None)
+    if is_failure is not None:
+        return not is_failure
+
+    value = getattr(reason_code, "value", reason_code)
+    try:
+        return int(value) == 0
+    except (TypeError, ValueError):
+        return str(reason_code).lower() == "success"
+
+
 def on_connect(client: mqtt.Client, _userdata, _flags, reason_code, _properties=None) -> None:
-    connected = int(reason_code) == 0
+    connected = mqtt_reason_code_is_success(reason_code)
     set_state(mqtt_connected=connected)
     if not connected:
         return
