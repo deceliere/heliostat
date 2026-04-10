@@ -1,12 +1,18 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
+#include <ArduinoJson.h>
 #include <BLEController.h>
 #include <BLEControllerRegistry.h>
 #include <ESP32Servo.h>
+#include <PubSubClient.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <time.h>
+
+#if __has_include("remote_secrets.h")
+#include "remote_secrets.h"
+#endif
 
 // le miroir doit etre oriente SUD et a l'horizontal pour que les angles soient corrects, sinon il faudra faire des ajustements dans les calculs d'angles
 
@@ -70,6 +76,29 @@ constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
 constexpr time_t HELIOSTAT_START_UNIX_TIME_UTC = 0;
 constexpr float HELIOSTAT_TIME_SCALE = 1.0f;
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
+constexpr uint32_t REMOTE_STATE_PUBLISH_MS = 500;
+constexpr uint32_t REMOTE_WIFI_RETRY_MS = 10000;
+constexpr uint32_t REMOTE_MQTT_RETRY_MS = 5000;
+#ifndef REMOTE_WIFI_SSID
+#define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
+#endif
+#ifndef REMOTE_WIFI_PASSWORD
+#define REMOTE_WIFI_PASSWORD "TODO_WIFI_PASSWORD"
+#endif
+#ifndef REMOTE_MQTT_HOST
+#define REMOTE_MQTT_HOST "example.com"
+#endif
+#ifndef REMOTE_MQTT_PORT
+#define REMOTE_MQTT_PORT 1883
+#endif
+#ifndef REMOTE_MQTT_BASE_TOPIC
+#define REMOTE_MQTT_BASE_TOPIC "heliostat/remote1"
+#endif
+constexpr char REMOTE_WIFI_SSID_VALUE[] = REMOTE_WIFI_SSID;
+constexpr char REMOTE_WIFI_PASSWORD_VALUE[] = REMOTE_WIFI_PASSWORD;
+constexpr char REMOTE_MQTT_HOST_VALUE[] = REMOTE_MQTT_HOST;
+constexpr uint16_t REMOTE_MQTT_PORT_VALUE = REMOTE_MQTT_PORT;
+constexpr char REMOTE_MQTT_BASE_TOPIC_VALUE[] = REMOTE_MQTT_BASE_TOPIC;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 constexpr const char* ROLE_NAME = "controller";
@@ -142,6 +171,8 @@ Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ8
 #if defined(DEVICE_ROLE_REMOTE)
 Servo panServo;
 Servo tiltServo;
+WiFiClient remoteMqttNetClient;
+PubSubClient remoteMqttClient(remoteMqttNetClient);
 #endif
 
 float panAngleDeg = PAN_START_DEG;
@@ -189,6 +220,11 @@ float heliostatTimeScale = HELIOSTAT_TIME_SCALE;
 float lastAutoReferencePanDeg = PAN_START_DEG;
 float lastAutoReferenceTiltDeg = TILT_START_DEG;
 time_t autoTrackStartUnixTimeUtc = 0;
+bool wifiLinkOk = false;
+bool mqttLinkOk = false;
+uint32_t lastWifiConnectAttemptMs = 0;
+uint32_t lastMqttConnectAttemptMs = 0;
+uint32_t lastRemoteStatePublishMs = 0;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
@@ -440,6 +476,13 @@ String formatMac(const uint8_t* mac) {
   return String(buffer);
 }
 
+String mqttTopic(const char* suffix) {
+  String topic = REMOTE_MQTT_BASE_TOPIC_VALUE;
+  topic += "/";
+  topic += suffix;
+  return topic;
+}
+
 void beginStatusLed() {
   if (!STATUS_LED_ENABLED) {
     return;
@@ -590,6 +633,238 @@ void setControllerHeliostatTimeScale(float scale) {
 #if defined(DEVICE_ROLE_REMOTE)
 int lastPanPulseUs = 0;
 int lastTiltPulseUs = 0;
+
+void markRemoteCommandReceived() {
+  packetReceived = true;
+  lastRxMs = millis();
+}
+
+String buildRemoteMqttClientId() {
+  return String("heliostat-remote-") + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+}
+
+void printRemoteTrackingDiagnostic() {
+  time_t currentUnixTime = 0;
+  if (!currentUnixTimeUtc(currentUnixTime)) {
+    currentUnixTime = 0;
+  }
+  const double driftSeconds =
+      (currentUnixTime > 0 && autoTrackStartUnixTimeUtc > 0)
+          ? difftime(currentUnixTime, autoTrackStartUnixTimeUtc)
+          : -1.0;
+  Serial.printf(
+      "TRACK_DIAG | mode=%s | now_utc=%s | auto_start_utc=%s | drift_s=%.0f | auto_ref_pan=%.3f | actual_pan=%.3f | delta_pan=%+.3f | auto_ref_tilt=%.3f | actual_tilt=%.3f | delta_tilt=%+.3f | target=%s | sun_time=%s\n",
+      controlModeName(controlMode),
+      formatUnixTimeUtc(currentUnixTime).c_str(),
+      formatUnixTimeUtc(autoTrackStartUnixTimeUtc).c_str(),
+      driftSeconds,
+      lastAutoReferencePanDeg,
+      panAngleDeg,
+      panAngleDeg - lastAutoReferencePanDeg,
+      lastAutoReferenceTiltDeg,
+      tiltAngleDeg,
+      tiltAngleDeg - lastAutoReferenceTiltDeg,
+      targetDirectionValid ? "ok" : "missing",
+      sunTimeValid ? "ok" : "missing");
+}
+
+void publishRemoteAvailability(const char* state) {
+  if (!remoteMqttClient.connected()) {
+    return;
+  }
+  const String topic = mqttTopic("availability");
+  remoteMqttClient.publish(topic.c_str(), state, true);
+}
+
+void publishRemoteDiag(const char* event) {
+  if (!remoteMqttClient.connected()) {
+    return;
+  }
+
+  JsonDocument doc;
+  doc["event"] = event;
+  doc["mode"] = controlModeName(controlMode);
+  doc["pan_deg"] = panAngleDeg;
+  doc["tilt_deg"] = tiltAngleDeg;
+  time_t unixTimeUtc = 0;
+  if (currentUnixTimeUtc(unixTimeUtc)) {
+    doc["remote_utc"] = static_cast<int64_t>(unixTimeUtc);
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+  const String topic = mqttTopic("diag");
+  remoteMqttClient.publish(topic.c_str(), payload.c_str(), false);
+}
+
+void publishRemoteState(bool force = false) {
+  const uint32_t nowMs = millis();
+  if (!force && (nowMs - lastRemoteStatePublishMs) < REMOTE_STATE_PUBLISH_MS) {
+    return;
+  }
+  if (!remoteMqttClient.connected()) {
+    return;
+  }
+
+  lastRemoteStatePublishMs = nowMs;
+
+  JsonDocument doc;
+  doc["mode"] = controlModeName(controlMode);
+  doc["pan_deg"] = panAngleDeg;
+  doc["tilt_deg"] = tiltAngleDeg;
+  doc["pan_us"] = lastPanPulseUs;
+  doc["tilt_us"] = lastTiltPulseUs;
+  doc["sun_time_ok"] = sunTimeValid;
+  doc["target_ok"] = targetDirectionValid;
+  doc["auto_enabled"] = autoTrackEnabled;
+  doc["precision"] = precisionManualMode;
+  doc["wifi_ok"] = wifiLinkOk;
+  doc["mqtt_ok"] = mqttLinkOk;
+  time_t unixTimeUtc = 0;
+  if (currentUnixTimeUtc(unixTimeUtc)) {
+    doc["remote_utc"] = static_cast<int64_t>(unixTimeUtc);
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+  const String topic = mqttTopic("state");
+  remoteMqttClient.publish(topic.c_str(), payload.c_str(), true);
+}
+
+void handleRemoteModeCommand(const JsonDocument& doc) {
+  const char* mode = doc["mode"] | "";
+  if (strcmp(mode, "manual") == 0) {
+    autoTrackEnabled = false;
+    controlMode = CONTROL_MODE_MANUAL;
+    remotePanInput = 0.0f;
+    remoteTiltInput = 0.0f;
+  } else if (strcmp(mode, "captured") == 0) {
+    autoTrackEnabled = false;
+    if (targetDirectionValid) {
+      controlMode = CONTROL_MODE_TARGET_CAPTURED;
+    }
+  } else if (strcmp(mode, "auto") == 0) {
+    if (targetDirectionValid) {
+      autoTrackEnabled = true;
+    }
+  }
+}
+
+void handleRemoteManualCommand(const JsonDocument& doc) {
+  remotePanInput = constrain(doc["pan_rate"] | 0.0f, -1.0f, 1.0f);
+  remoteTiltInput = constrain(doc["tilt_rate"] | 0.0f, -1.0f, 1.0f);
+  precisionManualMode = doc["precision"] | false;
+  autoTrackEnabled = false;
+  controlMode = CONTROL_MODE_MANUAL;
+}
+
+void handleRemoteActionCommand(const JsonDocument& doc) {
+  const char* action = doc["action"] | "";
+  if (strcmp(action, "capture_target") == 0) {
+    captureTargetRequested = true;
+  } else if (strcmp(action, "recenter") == 0) {
+    recenterRequested = true;
+  } else if (strcmp(action, "print_diag") == 0) {
+    printRemoteTrackingDiagnostic();
+    publishRemoteDiag("print_diag");
+  }
+}
+
+void handleRemoteTimeCommand(const JsonDocument& doc) {
+  const int64_t unixTimeUtc = doc["unix_utc"] | 0;
+  const float timeScale = doc["time_scale"] | 1.0f;
+  if (unixTimeUtc > 0) {
+    setHeliostatUnixTimeUtc(static_cast<time_t>(unixTimeUtc));
+  }
+  heliostatTimeScale = max(timeScale, 0.01f);
+}
+
+void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length) {
+  String payload;
+  payload.reserve(length);
+  for (unsigned int i = 0; i < length; ++i) {
+    payload += static_cast<char>(payloadBytes[i]);
+  }
+
+  JsonDocument doc;
+  const auto error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.printf("MQTT invalid JSON on %s: %s\n", topic, error.c_str());
+    return;
+  }
+
+  const String topicString(topic);
+  if (topicString == mqttTopic("cmd/mode")) {
+    handleRemoteModeCommand(doc);
+  } else if (topicString == mqttTopic("cmd/manual")) {
+    handleRemoteManualCommand(doc);
+  } else if (topicString == mqttTopic("cmd/action")) {
+    handleRemoteActionCommand(doc);
+  } else if (topicString == mqttTopic("cmd/time")) {
+    handleRemoteTimeCommand(doc);
+  }
+
+  markRemoteCommandReceived();
+  publishRemoteState(true);
+}
+
+void ensureRemoteWifiConnected(uint32_t nowMs) {
+  wifiLinkOk = (WiFi.status() == WL_CONNECTED);
+  if (wifiLinkOk) {
+    return;
+  }
+  if ((nowMs - lastWifiConnectAttemptMs) < REMOTE_WIFI_RETRY_MS) {
+    return;
+  }
+
+  lastWifiConnectAttemptMs = nowMs;
+  Serial.printf("WiFi connect: ssid=%s\n", REMOTE_WIFI_SSID_VALUE);
+  WiFi.disconnect(true, true);
+  delay(50);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(REMOTE_WIFI_SSID_VALUE, REMOTE_WIFI_PASSWORD_VALUE);
+}
+
+void ensureRemoteMqttConnected(uint32_t nowMs) {
+  wifiLinkOk = (WiFi.status() == WL_CONNECTED);
+  mqttLinkOk = remoteMqttClient.connected();
+  if (!wifiLinkOk) {
+    if (mqttLinkOk) {
+      remoteMqttClient.disconnect();
+      mqttLinkOk = false;
+    }
+    return;
+  }
+
+  if (mqttLinkOk) {
+    return;
+  }
+
+  if ((nowMs - lastMqttConnectAttemptMs) < REMOTE_MQTT_RETRY_MS) {
+    return;
+  }
+
+  lastMqttConnectAttemptMs = nowMs;
+  const String willTopic = mqttTopic("availability");
+  const String clientId = buildRemoteMqttClientId();
+  Serial.printf("MQTT connect: %s:%u client=%s\n",
+                REMOTE_MQTT_HOST_VALUE, static_cast<unsigned>(REMOTE_MQTT_PORT_VALUE), clientId.c_str());
+  if (!remoteMqttClient.connect(clientId.c_str(), willTopic.c_str(), 1, true, "offline")) {
+    Serial.printf("MQTT connect failed, state=%d\n", remoteMqttClient.state());
+    mqttLinkOk = false;
+    return;
+  }
+
+  mqttLinkOk = true;
+  remoteMqttClient.subscribe(mqttTopic("cmd/mode").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/manual").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/action").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/time").c_str());
+  publishRemoteAvailability("online");
+  publishRemoteState(true);
+  publishRemoteDiag("mqtt_connected");
+}
 
 void writeServos() {
   lastPanPulseUs = quantizePulseUs(
@@ -745,6 +1020,13 @@ void beginServos() {
   tiltServo.attach(TILT_SERVO_PIN, TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
   writeServos();
   delay(250);
+}
+
+void beginRemoteMqtt() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  remoteMqttClient.setServer(REMOTE_MQTT_HOST_VALUE, REMOTE_MQTT_PORT_VALUE);
+  remoteMqttClient.setCallback(onRemoteMqttMessage);
 }
 #endif
 
@@ -1170,11 +1452,13 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | mode=%u | rx=%s | age_ms=%lu | step_us=%d | pan_us=%d | tilt_us=%d | sun_time=%s | target=%s\n",
-      static_cast<unsigned>(controlMode),
+      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | pan_us=%d | tilt_us=%d | sun_time=%s | target=%s\n",
+      controlModeName(controlMode),
+      wifiLinkOk ? "ok" : "down",
+      mqttLinkOk ? "ok" : "down",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
-      SERVO_COMMAND_STEP_US,
+      panAngleDeg, tiltAngleDeg,
       lastPanPulseUs, lastTiltPulseUs,
       sunTimeValid ? "ok" : "missing",
       targetDirectionValid ? "ok" : "missing");
@@ -1215,12 +1499,11 @@ void setup() {
   lastControlUpdateMs = millis();
   lastStatusPrintMs = millis();
 
+#if defined(DEVICE_ROLE_CONTROLLER)
   setupEspNowWifi();
   ensureEspNow();
   ensureBroadcastPeer();
   esp_now_register_recv_cb(onEspNowReceived);
-
-#if defined(DEVICE_ROLE_CONTROLLER)
   esp_now_register_send_cb(onEspNowSent);
   if (CLEAR_XBOX_BONDS_ON_BOOT) {
     BLEControllerRegistry::deleteBonds();
@@ -1232,6 +1515,7 @@ void setup() {
   applyLedFromPanTilt(millis());
 #else
   beginServos();
+  beginRemoteMqtt();
 #endif
 
   Serial.println();
@@ -1255,7 +1539,9 @@ void setup() {
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
 #else
   Serial.println("Remote node ready.");
-  Serial.println("Auto-pairing enabled: power the controller ESP32 and it will lock onto this remote.");
+  Serial.printf("WiFi target SSID=%s | MQTT=%s:%u | topic=%s\n",
+                REMOTE_WIFI_SSID_VALUE, REMOTE_MQTT_HOST_VALUE,
+                static_cast<unsigned>(REMOTE_MQTT_PORT_VALUE), REMOTE_MQTT_BASE_TOPIC_VALUE);
   Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
                 PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
   Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
@@ -1279,10 +1565,15 @@ void loop() {
 #endif
   updateLedFromXbox(nowMs);
 #if defined(DEVICE_ROLE_REMOTE)
+  ensureRemoteWifiConnected(nowMs);
+  ensureRemoteMqttConnected(nowMs);
+  if (remoteMqttClient.connected()) {
+    remoteMqttClient.loop();
+  }
   updateTargetsFromRemoteInput(nowMs);
   moveServosTowardTargets(nowMs);
   applyLedFromPanTilt(nowMs);
-  sendAnnouncePacket(nowMs);
+  publishRemoteState();
 #endif
   printStatus(nowMs);
 }
