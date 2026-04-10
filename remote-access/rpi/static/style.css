@@ -121,6 +121,10 @@ h2 {
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   align-items: stretch;
+  grid-template-areas:
+    ". up ."
+    "left center right"
+    ". down .";
 }
 
 .jog-button {
@@ -130,8 +134,29 @@ h2 {
   font-weight: 600;
 }
 
-.jog-button.stop {
-  background: #31422f;
+.jog-button#tilt-up {
+  grid-area: up;
+}
+
+.jog-button#pan-left {
+  grid-area: left;
+}
+
+.jog-button#pan-right {
+  grid-area: right;
+}
+
+.jog-button#tilt-down {
+  grid-area: down;
+}
+
+.jog-center {
+  grid-area: center;
+  border-radius: 22px;
+  border: 1px dashed rgba(31, 42, 31, 0.14);
+  background:
+    radial-gradient(circle at center, rgba(185, 92, 46, 0.12), transparent 65%),
+    rgba(255, 255, 255, 0.35);
 }
 
 .jog-note {

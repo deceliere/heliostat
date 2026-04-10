@@ -115,18 +115,6 @@ function bindJogButtons() {
     });
   });
 
-  const stopButton = document.getElementById("stop-motion");
-  stopButton?.addEventListener("click", async () => {
-    await stopJogging();
-    if (typeof latestState.pan_deg === "number" && typeof latestState.tilt_deg === "number") {
-      await postJson("/api/cmd/move-to", {
-        pan_deg: latestState.pan_deg,
-        tilt_deg: latestState.tilt_deg,
-      });
-    }
-    await refreshUi();
-  });
-
   window.addEventListener("pointerup", () => {
     stopJogging().catch((error) => console.error(error));
   });
