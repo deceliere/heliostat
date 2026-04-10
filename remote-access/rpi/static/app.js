@@ -1,5 +1,5 @@
 async function loadHealth() {
-  const response = await fetch("/api/health");
+  const response = await fetch("/api/health", { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`health request failed: ${response.status}`);
   }
@@ -7,7 +7,7 @@ async function loadHealth() {
 }
 
 async function loadState() {
-  const response = await fetch("/api/state");
+  const response = await fetch("/api/state", { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`state request failed: ${response.status}`);
   }
@@ -47,6 +47,13 @@ function formatUtc(unixUtc) {
     return "Unknown";
   }
   return new Date(unixUtc * 1000).toISOString().replace(".000Z", "Z");
+}
+
+function formatUnixMs(unixMs) {
+  if (!unixMs) {
+    return "Unknown";
+  }
+  return new Date(unixMs).toISOString().replace(".000Z", "Z");
 }
 
 function readAbsoluteTargets() {
@@ -111,6 +118,12 @@ function bindJogButtons() {
   const stopButton = document.getElementById("stop-motion");
   stopButton?.addEventListener("click", async () => {
     await stopJogging();
+    if (typeof latestState.pan_deg === "number" && typeof latestState.tilt_deg === "number") {
+      await postJson("/api/cmd/move-to", {
+        pan_deg: latestState.pan_deg,
+        tilt_deg: latestState.tilt_deg,
+      });
+    }
     await refreshUi();
   });
 
@@ -124,10 +137,10 @@ function bindJogButtons() {
 
 function bindKeyboardJog() {
   const keyMap = {
-    ArrowLeft: { axis: "pan", direction: -1 },
-    ArrowRight: { axis: "pan", direction: 1 },
-    ArrowUp: { axis: "tilt", direction: 1 },
-    ArrowDown: { axis: "tilt", direction: -1 },
+    ArrowLeft: { axis: "pan", direction: 1 },
+    ArrowRight: { axis: "pan", direction: -1 },
+    ArrowUp: { axis: "tilt", direction: -1 },
+    ArrowDown: { axis: "tilt", direction: 1 },
   };
 
   window.addEventListener("keydown", (event) => {
@@ -232,6 +245,7 @@ async function refreshUi() {
     setText("remote-mode", state.mode ?? "Unknown");
     setText("remote-time", formatUtc(state.remote_utc));
     setText("time-source", state.time_source ?? "unknown");
+    setText("state-updated", formatUnixMs(state.last_state_update_unix_ms));
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {
     setText("backend-status", "Error");

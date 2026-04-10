@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -36,6 +37,7 @@ runtime_state = {
     "target_ok": False,
     "ntp_ok": False,
     "time_source": "unknown",
+    "last_state_update_unix_ms": 0,
     "last_diag": None,
 }
 
@@ -105,6 +107,7 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           target_ok=bool(data.get("target_ok", False)),
           ntp_ok=bool(data.get("ntp_ok", False)),
           time_source=data.get("time_source", "unknown"),
+          last_state_update_unix_ms=int(round(time.time() * 1000)),
           remote_online=bool(data.get("mqtt_ok", get_state().get("remote_online", False))),
       )
       return
