@@ -23,7 +23,8 @@ The suffix `remote1` allows future extension to multiple devices without redesig
 ### Commands To The ESP32
 
 - `heliostat/remote1/cmd/mode`
-- `heliostat/remote1/cmd/manual`
+- `heliostat/remote1/cmd/jog`
+- `heliostat/remote1/cmd/move_to`
 - `heliostat/remote1/cmd/action`
 - `heliostat/remote1/cmd/time`
 
@@ -60,34 +61,55 @@ Notes:
 - `captured` means target is known but auto tracking is not active
 - the ESP32 remains responsible for validating illegal transitions
 
-### `heliostat/remote1/cmd/manual`
+### `heliostat/remote1/cmd/jog`
 
 Purpose:
 
-- drive the mirror manually
+- nudge one axis by a known increment
 
 Payload:
 
 ```json
 {
-  "pan_rate": 0.35,
-  "tilt_rate": -0.20,
-  "precision": false,
-  "seq": 1234
+  "axis": "pan",
+  "delta_deg": 1.0
 }
 ```
 
 Fields:
 
-- `pan_rate`: float from `-1.0` to `1.0`
-- `tilt_rate`: float from `-1.0` to `1.0`
-- `precision`: boolean
-- `seq`: optional monotonic command sequence number
+- `axis`: `pan` or `tilt`
+- `delta_deg`: signed increment in model degrees
 
 Notes:
 
-- this is a rate command, not an absolute angle command
-- if no fresh manual command arrives within a timeout, both rates go back to zero
+- positive or negative sign defines direction
+- holding a button in the UI is implemented by repeating jog commands from the UI side
+
+### `heliostat/remote1/cmd/move_to`
+
+Purpose:
+
+- send an absolute position target
+
+Payload:
+
+```json
+{
+  "pan_deg": 42.5,
+  "tilt_deg": 88.0
+}
+```
+
+Fields:
+
+- `pan_deg`: absolute pan target
+- `tilt_deg`: absolute tilt target
+
+Notes:
+
+- this is the most deterministic command path
+- the ESP32 remains responsible for constraining values to valid limits
 
 ### `heliostat/remote1/cmd/action`
 
@@ -154,15 +176,18 @@ Payload:
   "mode": "auto",
   "pan_deg": 24.675,
   "tilt_deg": 36.690,
+  "pan_target_deg": 24.675,
+  "tilt_target_deg": 36.690,
   "pan_us": 820,
   "tilt_us": 1285,
   "sun_time_ok": true,
   "target_ok": true,
   "remote_utc": 1775803262,
   "auto_enabled": true,
-  "precision": false,
   "wifi_ok": true,
-  "mqtt_ok": true
+  "mqtt_ok": true,
+  "ntp_ok": true,
+  "time_source": "ntp"
 }
 ```
 
@@ -170,6 +195,7 @@ Notes:
 
 - this topic should usually be retained
 - it is the main source for UI state
+- it should expose both current angles and current target angles
 
 ### `heliostat/remote1/diag`
 
@@ -216,16 +242,13 @@ Notes:
 
 ## Timing Rules
 
-### Manual Command Timeout
+### Jog Repeat Rate
 
-If `cmd/manual` is not refreshed within a short timeout:
+Suggested initial repeat rate for held jog buttons:
 
-- `pan_rate = 0`
-- `tilt_rate = 0`
+- `100 ms` to `200 ms`
 
-Suggested timeout:
-
-- `250 ms` to `500 ms`
+The jog command itself is stateless. Repetition belongs in the UI.
 
 ### State Publish Rate
 

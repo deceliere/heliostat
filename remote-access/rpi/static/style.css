@@ -91,11 +91,61 @@ h2 {
   margin-bottom: 14px;
 }
 
-.precision-toggle {
-  display: inline-flex;
+.step-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.step-button {
+  background: #fff4e6;
+  color: var(--ink);
+  border: 1px solid rgba(185, 92, 46, 0.25);
+}
+
+.step-button.active {
+  background: var(--accent);
+  color: #fff8ef;
+}
+
+.jog-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(220px, 1fr);
+  gap: 20px;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+}
+
+.jog-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.jog-button {
+  min-height: 74px;
+  border-radius: 20px;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.jog-button.stop {
+  background: #31422f;
+}
+
+.jog-note {
+  min-width: 0;
+}
+
+input[type="number"] {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font: inherit;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.8);
 }
 
 button {
@@ -136,5 +186,9 @@ pre {
   .state-card {
     padding: 18px;
     border-radius: 16px;
+  }
+
+  .jog-shell {
+    grid-template-columns: 1fr;
   }
 }

@@ -27,11 +27,15 @@ runtime_state = {
     "mode": "unknown",
     "pan_deg": None,
     "tilt_deg": None,
+    "pan_target_deg": None,
+    "tilt_target_deg": None,
     "pan_us": None,
     "tilt_us": None,
     "remote_utc": None,
     "sun_time_ok": False,
     "target_ok": False,
+    "ntp_ok": False,
+    "time_source": "unknown",
     "last_diag": None,
 }
 
@@ -92,11 +96,15 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           mode=data.get("mode", "unknown"),
           pan_deg=data.get("pan_deg"),
           tilt_deg=data.get("tilt_deg"),
+          pan_target_deg=data.get("pan_target_deg"),
+          tilt_target_deg=data.get("tilt_target_deg"),
           pan_us=data.get("pan_us"),
           tilt_us=data.get("tilt_us"),
           remote_utc=data.get("remote_utc"),
           sun_time_ok=bool(data.get("sun_time_ok", False)),
           target_ok=bool(data.get("target_ok", False)),
+          ntp_ok=bool(data.get("ntp_ok", False)),
+          time_source=data.get("time_source", "unknown"),
           remote_online=bool(data.get("mqtt_ok", get_state().get("remote_online", False))),
       )
       return
@@ -160,6 +168,48 @@ def api_cmd_action(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="invalid action")
     mqtt_client.publish(topic("cmd/action"), json.dumps({"action": action}), qos=1)
     return {"ok": True, "published": True}
+
+
+@app.post("/api/cmd/jog")
+def api_cmd_jog(payload: dict) -> dict:
+    axis = payload.get("axis")
+    if axis not in {"pan", "tilt"}:
+        raise HTTPException(status_code=400, detail="invalid axis")
+
+    delta_deg = float(payload.get("delta_deg", 0.0))
+    if delta_deg == 0.0:
+        raise HTTPException(status_code=400, detail="delta_deg must be non-zero")
+
+    command = {"axis": axis, "delta_deg": delta_deg}
+    mqtt_client.publish(topic("cmd/jog"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/move-to")
+def api_cmd_move_to(payload: dict) -> dict:
+    if "pan_deg" not in payload or "tilt_deg" not in payload:
+        raise HTTPException(status_code=400, detail="pan_deg and tilt_deg are required")
+
+    command = {
+        "pan_deg": float(payload.get("pan_deg")),
+        "tilt_deg": float(payload.get("tilt_deg")),
+    }
+    mqtt_client.publish(topic("cmd/move_to"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/time")
+def api_cmd_time(payload: dict) -> dict:
+    unix_utc = int(payload.get("unix_utc", 0))
+    if unix_utc <= 0:
+        raise HTTPException(status_code=400, detail="invalid unix_utc")
+
+    command = {
+        "unix_utc": unix_utc,
+        "time_scale": float(payload.get("time_scale", 1.0)),
+    }
+    mqtt_client.publish(topic("cmd/time"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
 
 
 @app.post("/api/cmd/manual")

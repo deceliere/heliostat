@@ -79,6 +79,9 @@ constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
 constexpr uint32_t REMOTE_STATE_PUBLISH_MS = 150;
 constexpr uint32_t REMOTE_WIFI_RETRY_MS = 10000;
 constexpr uint32_t REMOTE_MQTT_RETRY_MS = 5000;
+constexpr uint32_t REMOTE_NTP_RETRY_MS = 15000;
+constexpr uint32_t REMOTE_NTP_RESYNC_MS = 60000;
+constexpr time_t MIN_VALID_UNIX_TIME_UTC = 1704067200;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif
@@ -99,6 +102,9 @@ constexpr char REMOTE_WIFI_PASSWORD_VALUE[] = REMOTE_WIFI_PASSWORD;
 constexpr char REMOTE_MQTT_HOST_VALUE[] = REMOTE_MQTT_HOST;
 constexpr uint16_t REMOTE_MQTT_PORT_VALUE = REMOTE_MQTT_PORT;
 constexpr char REMOTE_MQTT_BASE_TOPIC_VALUE[] = REMOTE_MQTT_BASE_TOPIC;
+constexpr char REMOTE_NTP_SERVER_1[] = "pool.ntp.org";
+constexpr char REMOTE_NTP_SERVER_2[] = "time.nist.gov";
+constexpr char REMOTE_NTP_SERVER_3[] = "time.google.com";
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 constexpr const char* ROLE_NAME = "controller";
@@ -225,6 +231,10 @@ bool mqttLinkOk = false;
 uint32_t lastWifiConnectAttemptMs = 0;
 uint32_t lastMqttConnectAttemptMs = 0;
 uint32_t lastRemoteStatePublishMs = 0;
+uint32_t lastNtpSyncAttemptMs = 0;
+uint32_t lastNtpApplyMs = 0;
+bool ntpConfigured = false;
+bool ntpTimeValid = false;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
@@ -363,6 +373,11 @@ bool currentUnixTimeUtc(time_t& unixTimeUtc) {
                                                        static_cast<double>(heliostatTimeScale)) /
                                                       1000.0);
   return true;
+}
+
+bool systemClockTimeValid(time_t& unixTimeUtc) {
+  unixTimeUtc = time(nullptr);
+  return unixTimeUtc >= MIN_VALID_UNIX_TIME_UTC;
 }
 
 Vec3 sunVectorFromUnixTime(time_t unixTimeUtc) {
@@ -712,14 +727,17 @@ void publishRemoteState(bool force = false) {
   doc["mode"] = controlModeName(controlMode);
   doc["pan_deg"] = panAngleDeg;
   doc["tilt_deg"] = tiltAngleDeg;
+  doc["pan_target_deg"] = panTargetDeg;
+  doc["tilt_target_deg"] = tiltTargetDeg;
   doc["pan_us"] = lastPanPulseUs;
   doc["tilt_us"] = lastTiltPulseUs;
   doc["sun_time_ok"] = sunTimeValid;
   doc["target_ok"] = targetDirectionValid;
   doc["auto_enabled"] = autoTrackEnabled;
-  doc["precision"] = precisionManualMode;
   doc["wifi_ok"] = wifiLinkOk;
   doc["mqtt_ok"] = mqttLinkOk;
+  doc["ntp_ok"] = ntpTimeValid;
+  doc["time_source"] = ntpTimeValid ? "ntp" : (heliostatStartUnixTimeUtc > 0 ? "mqtt" : "missing");
   time_t unixTimeUtc = 0;
   if (currentUnixTimeUtc(unixTimeUtc)) {
     doc["remote_utc"] = static_cast<int64_t>(unixTimeUtc);
@@ -758,6 +776,36 @@ void handleRemoteManualCommand(const JsonDocument& doc) {
   controlMode = CONTROL_MODE_MANUAL;
 }
 
+void handleRemoteJogCommand(const JsonDocument& doc) {
+  const char* axis = doc["axis"] | "";
+  const float deltaDeg = doc["delta_deg"] | 0.0f;
+  if (fabsf(deltaDeg) <= 1e-4f) {
+    return;
+  }
+
+  autoTrackEnabled = false;
+  controlMode = CONTROL_MODE_MANUAL;
+  remotePanInput = 0.0f;
+  remoteTiltInput = 0.0f;
+  precisionManualMode = false;
+
+  if (strcmp(axis, "pan") == 0) {
+    panTargetDeg = constrain(panTargetDeg + deltaDeg, PAN_MIN_DEG, PAN_MAX_DEG);
+  } else if (strcmp(axis, "tilt") == 0) {
+    tiltTargetDeg = constrain(tiltTargetDeg + deltaDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+  }
+}
+
+void handleRemoteMoveToCommand(const JsonDocument& doc) {
+  autoTrackEnabled = false;
+  controlMode = CONTROL_MODE_MANUAL;
+  remotePanInput = 0.0f;
+  remoteTiltInput = 0.0f;
+  precisionManualMode = false;
+  panTargetDeg = constrain(doc["pan_deg"] | panTargetDeg, PAN_MIN_DEG, PAN_MAX_DEG);
+  tiltTargetDeg = constrain(doc["tilt_deg"] | tiltTargetDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+}
+
 void handleRemoteActionCommand(const JsonDocument& doc) {
   const char* action = doc["action"] | "";
   if (strcmp(action, "capture_target") == 0) {
@@ -767,7 +815,7 @@ void handleRemoteActionCommand(const JsonDocument& doc) {
     controlMode = CONTROL_MODE_MANUAL;
     remotePanInput = 0.0f;
     remoteTiltInput = 0.0f;
-    recenterRequested = false;
+    precisionManualMode = false;
     panTargetDeg = PAN_START_DEG;
     tiltTargetDeg = TILT_START_DEG;
   } else if (strcmp(action, "print_diag") == 0) {
@@ -781,6 +829,7 @@ void handleRemoteTimeCommand(const JsonDocument& doc) {
   const float timeScale = doc["time_scale"] | 1.0f;
   if (unixTimeUtc > 0) {
     setHeliostatUnixTimeUtc(static_cast<time_t>(unixTimeUtc));
+    ntpTimeValid = false;
   }
   heliostatTimeScale = max(timeScale, 0.01f);
 }
@@ -802,6 +851,10 @@ void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length
   const String topicString(topic);
   if (topicString == mqttTopic("cmd/mode")) {
     handleRemoteModeCommand(doc);
+  } else if (topicString == mqttTopic("cmd/jog")) {
+    handleRemoteJogCommand(doc);
+  } else if (topicString == mqttTopic("cmd/move_to")) {
+    handleRemoteMoveToCommand(doc);
   } else if (topicString == mqttTopic("cmd/manual")) {
     handleRemoteManualCommand(doc);
   } else if (topicString == mqttTopic("cmd/action")) {
@@ -830,6 +883,36 @@ void ensureRemoteWifiConnected(uint32_t nowMs) {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(REMOTE_WIFI_SSID_VALUE, REMOTE_WIFI_PASSWORD_VALUE);
+}
+
+void ensureRemoteNtpTime(uint32_t nowMs) {
+  if (!wifiLinkOk) {
+    ntpTimeValid = false;
+    return;
+  }
+
+  if (!ntpConfigured) {
+    configTime(0, 0, REMOTE_NTP_SERVER_1, REMOTE_NTP_SERVER_2, REMOTE_NTP_SERVER_3);
+    ntpConfigured = true;
+    lastNtpSyncAttemptMs = nowMs;
+  }
+
+  time_t ntpUnixTime = 0;
+  if (systemClockTimeValid(ntpUnixTime)) {
+    ntpTimeValid = true;
+    if (fabsf(heliostatTimeScale - 1.0f) < 0.001f &&
+        ((nowMs - lastNtpApplyMs) >= REMOTE_NTP_RESYNC_MS || heliostatStartUnixTimeUtc <= 0)) {
+      setHeliostatUnixTimeUtc(ntpUnixTime);
+      lastNtpApplyMs = nowMs;
+    }
+    return;
+  }
+
+  ntpTimeValid = false;
+  if ((nowMs - lastNtpSyncAttemptMs) >= REMOTE_NTP_RETRY_MS) {
+    configTime(0, 0, REMOTE_NTP_SERVER_1, REMOTE_NTP_SERVER_2, REMOTE_NTP_SERVER_3);
+    lastNtpSyncAttemptMs = nowMs;
+  }
 }
 
 void ensureRemoteMqttConnected(uint32_t nowMs) {
@@ -864,6 +947,8 @@ void ensureRemoteMqttConnected(uint32_t nowMs) {
 
   mqttLinkOk = true;
   remoteMqttClient.subscribe(mqttTopic("cmd/mode").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/jog").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/move_to").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/manual").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/action").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/time").c_str());
@@ -1456,13 +1541,14 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | pan_us=%d | tilt_us=%d | sun_time=%s | target=%s\n",
+      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | ntp=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | target=%7.3f/%7.3f | pan_us=%d | tilt_us=%d | sun_time=%s | target=%s\n",
       controlModeName(controlMode),
       wifiLinkOk ? "ok" : "down",
       mqttLinkOk ? "ok" : "down",
+      ntpTimeValid ? "ok" : "down",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
-      panAngleDeg, tiltAngleDeg,
+      panAngleDeg, tiltAngleDeg, panTargetDeg, tiltTargetDeg,
       lastPanPulseUs, lastTiltPulseUs,
       sunTimeValid ? "ok" : "missing",
       targetDirectionValid ? "ok" : "missing");
@@ -1570,6 +1656,7 @@ void loop() {
   updateLedFromXbox(nowMs);
 #if defined(DEVICE_ROLE_REMOTE)
   ensureRemoteWifiConnected(nowMs);
+  ensureRemoteNtpTime(nowMs);
   ensureRemoteMqttConnected(nowMs);
   if (remoteMqttClient.connected()) {
     remoteMqttClient.loop();

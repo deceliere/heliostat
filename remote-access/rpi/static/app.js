@@ -30,7 +30,10 @@ async function postJson(url, payload) {
   return response.json();
 }
 
-let manualPublishTimer = null;
+let selectedStepDeg = 1.0;
+let jogRepeatTimer = null;
+let activeJogKey = null;
+let latestState = {};
 
 function setText(id, value) {
   const node = document.getElementById(id);
@@ -39,92 +42,196 @@ function setText(id, value) {
   }
 }
 
-function bindControls() {
-  const manualButton = document.getElementById("mode-manual");
-  const autoButton = document.getElementById("mode-auto");
-  const captureButton = document.getElementById("capture-target");
-  const recenterButton = document.getElementById("recenter");
-  const stopManualButton = document.getElementById("stop-manual");
-  const panRate = document.getElementById("pan-rate");
-  const tiltRate = document.getElementById("tilt-rate");
-  const precision = document.getElementById("precision");
+function formatUtc(unixUtc) {
+  if (!unixUtc) {
+    return "Unknown";
+  }
+  return new Date(unixUtc * 1000).toISOString().replace(".000Z", "Z");
+}
 
-  const readManualCommand = () => ({
-    pan_rate: Number(panRate?.value ?? 0),
-    tilt_rate: Number(tiltRate?.value ?? 0),
-    precision: Boolean(precision?.checked),
+function readAbsoluteTargets() {
+  return {
+    pan_deg: Number(document.getElementById("pan-absolute")?.value ?? 90),
+    tilt_deg: Number(document.getElementById("tilt-absolute")?.value ?? 90),
+  };
+}
+
+async function sendJog(axis, direction, multiplier = 1.0) {
+  await postJson("/api/cmd/mode", { mode: "manual" });
+  await postJson("/api/cmd/jog", {
+    axis,
+    delta_deg: direction * selectedStepDeg * multiplier,
   });
+}
 
-  const stopManualPublishing = async () => {
-    if (manualPublishTimer !== null) {
-      window.clearInterval(manualPublishTimer);
-      manualPublishTimer = null;
-    }
+async function stopJogging() {
+  if (jogRepeatTimer !== null) {
+    window.clearInterval(jogRepeatTimer);
+    jogRepeatTimer = null;
+  }
+  activeJogKey = null;
+}
 
-    panRate.value = "0";
-    tiltRate.value = "0";
-    await postJson("/api/cmd/manual", { ...readManualCommand(), pan_rate: 0, tilt_rate: 0 });
+function startJogging(axis, direction) {
+  const performJog = async () => {
+    await sendJog(axis, direction);
+    await refreshUi();
   };
 
-  const startManualPublishing = async () => {
-    const publish = async () => {
-      await postJson("/api/cmd/manual", readManualCommand());
+  stopJogging().catch((error) => console.error(error));
+  performJog().catch((error) => console.error(error));
+  jogRepeatTimer = window.setInterval(() => {
+    performJog().catch((error) => console.error(error));
+  }, 140);
+}
+
+function bindStepButtons() {
+  const buttons = document.querySelectorAll(".step-button");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedStepDeg = Number(button.dataset.step ?? "1");
+      buttons.forEach((candidate) => candidate.classList.remove("active"));
+      button.classList.add("active");
+    });
+  });
+}
+
+function bindJogButtons() {
+  const jogButtons = document.querySelectorAll(".jog-button[data-axis]");
+  jogButtons.forEach((button) => {
+    const axis = button.dataset.axis;
+    const direction = Number(button.dataset.direction ?? "0");
+
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      startJogging(axis, direction);
+    });
+  });
+
+  const stopButton = document.getElementById("stop-motion");
+  stopButton?.addEventListener("click", async () => {
+    await stopJogging();
+    await refreshUi();
+  });
+
+  window.addEventListener("pointerup", () => {
+    stopJogging().catch((error) => console.error(error));
+  });
+  window.addEventListener("pointercancel", () => {
+    stopJogging().catch((error) => console.error(error));
+  });
+}
+
+function bindKeyboardJog() {
+  const keyMap = {
+    ArrowLeft: { axis: "pan", direction: -1 },
+    ArrowRight: { axis: "pan", direction: 1 },
+    ArrowUp: { axis: "tilt", direction: 1 },
+    ArrowDown: { axis: "tilt", direction: -1 },
+  };
+
+  window.addEventListener("keydown", (event) => {
+    if (event.target instanceof HTMLInputElement) {
+      return;
+    }
+    const entry = keyMap[event.key];
+    if (!entry) {
+      return;
+    }
+
+    event.preventDefault();
+    const multiplier = event.shiftKey ? 10.0 : event.altKey ? 0.1 : 1.0;
+    if (activeJogKey === `${event.key}:${multiplier}`) {
+      return;
+    }
+
+    stopJogging().catch((error) => console.error(error));
+    activeJogKey = `${event.key}:${multiplier}`;
+
+    const performJog = async () => {
+      await sendJog(entry.axis, entry.direction, multiplier);
+      await refreshUi();
     };
 
-    if (manualPublishTimer === null) {
-      manualPublishTimer = window.setInterval(() => {
-        publish().catch((error) => {
-          console.error(error);
-        });
-      }, 100);
+    performJog().catch((error) => console.error(error));
+    jogRepeatTimer = window.setInterval(() => {
+      performJog().catch((error) => console.error(error));
+    }, 140);
+  });
+
+  window.addEventListener("keyup", (event) => {
+    if (keyMap[event.key]) {
+      stopJogging().catch((error) => console.error(error));
     }
+  });
+}
 
-    await postJson("/api/cmd/mode", { mode: "manual" });
-    await publish();
-    await refreshUi();
-  };
-
-  manualButton?.addEventListener("click", async () => {
-    await stopManualPublishing();
+function bindControlButtons() {
+  document.getElementById("mode-manual")?.addEventListener("click", async () => {
+    await stopJogging();
     await postJson("/api/cmd/mode", { mode: "manual" });
     await refreshUi();
   });
 
-  autoButton?.addEventListener("click", async () => {
-    await stopManualPublishing();
+  document.getElementById("mode-auto")?.addEventListener("click", async () => {
+    await stopJogging();
     await postJson("/api/cmd/mode", { mode: "auto" });
     await refreshUi();
   });
 
-  captureButton?.addEventListener("click", async () => {
-    await stopManualPublishing();
+  document.getElementById("capture-target")?.addEventListener("click", async () => {
+    await stopJogging();
     await postJson("/api/cmd/action", { action: "capture_target" });
     await refreshUi();
   });
 
-  recenterButton?.addEventListener("click", async () => {
-    await stopManualPublishing();
-    await postJson("/api/cmd/action", { action: "recenter" });
+  document.getElementById("print-diag")?.addEventListener("click", async () => {
+    await postJson("/api/cmd/action", { action: "print_diag" });
     await refreshUi();
   });
 
-  stopManualButton?.addEventListener("click", async () => {
-    await stopManualPublishing();
+  document.getElementById("recenter")?.addEventListener("click", async () => {
+    await stopJogging();
+    await postJson("/api/cmd/move-to", { pan_deg: 90.0, tilt_deg: 90.0 });
     await refreshUi();
   });
 
-  panRate?.addEventListener("input", startManualPublishing);
-  tiltRate?.addEventListener("input", startManualPublishing);
-  precision?.addEventListener("change", startManualPublishing);
+  document.getElementById("move-to")?.addEventListener("click", async () => {
+    await stopJogging();
+    await postJson("/api/cmd/move-to", readAbsoluteTargets());
+    await refreshUi();
+  });
+
+  document.getElementById("load-current")?.addEventListener("click", () => {
+    const panInput = document.getElementById("pan-absolute");
+    const tiltInput = document.getElementById("tilt-absolute");
+    if (panInput && typeof latestState.pan_deg === "number") {
+      panInput.value = String(latestState.pan_deg);
+    }
+    if (tiltInput && typeof latestState.tilt_deg === "number") {
+      tiltInput.value = String(latestState.tilt_deg);
+    }
+  });
+
+  document.getElementById("sync-time")?.addEventListener("click", async () => {
+    await postJson("/api/cmd/time", {
+      unix_utc: Math.floor(Date.now() / 1000),
+      time_scale: 1.0,
+    });
+    await refreshUi();
+  });
 }
 
 async function refreshUi() {
   try {
     const [health, state] = await Promise.all([loadHealth(), loadState()]);
+    latestState = state;
     setText("backend-status", health.ok ? "Online" : "Offline");
     setText("mqtt-status", health.mqtt_connected ? "Connected" : "Disconnected");
     setText("remote-status", health.remote_online ? "Online" : "Offline");
     setText("remote-mode", state.mode ?? "Unknown");
+    setText("remote-time", formatUtc(state.remote_utc));
+    setText("time-source", state.time_source ?? "unknown");
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {
     setText("backend-status", "Error");
@@ -132,6 +239,9 @@ async function refreshUi() {
   }
 }
 
-bindControls();
+bindStepButtons();
+bindJogButtons();
+bindKeyboardJog();
+bindControlButtons();
 refreshUi();
 setInterval(refreshUi, 250);
