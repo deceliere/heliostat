@@ -4,6 +4,9 @@
 #include <BLEController.h>
 #include <BLEControllerRegistry.h>
 #include <ESP32Servo.h>
+#ifndef MQTT_MAX_PACKET_SIZE
+#define MQTT_MAX_PACKET_SIZE 512
+#endif
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -82,6 +85,7 @@ constexpr uint32_t REMOTE_MQTT_RETRY_MS = 5000;
 constexpr uint32_t REMOTE_NTP_RETRY_MS = 15000;
 constexpr uint32_t REMOTE_NTP_RESYNC_MS = 60000;
 constexpr time_t MIN_VALID_UNIX_TIME_UTC = 1704067200;
+constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 512;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif
@@ -709,7 +713,10 @@ void publishRemoteDiag(const char* event) {
   String payload;
   serializeJson(doc, payload);
   const String topic = mqttTopic("diag");
-  remoteMqttClient.publish(topic.c_str(), payload.c_str(), false);
+  if (!remoteMqttClient.publish(topic.c_str(), payload.c_str(), false)) {
+    Serial.printf("MQTT diag publish failed: topic=%s bytes=%u\n",
+                  topic.c_str(), static_cast<unsigned>(payload.length()));
+  }
 }
 
 void publishRemoteState(bool force = false) {
@@ -746,7 +753,10 @@ void publishRemoteState(bool force = false) {
   String payload;
   serializeJson(doc, payload);
   const String topic = mqttTopic("state");
-  remoteMqttClient.publish(topic.c_str(), payload.c_str(), true);
+  if (!remoteMqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+    Serial.printf("MQTT state publish failed: topic=%s bytes=%u\n",
+                  topic.c_str(), static_cast<unsigned>(payload.length()));
+  }
 }
 
 void handleRemoteModeCommand(const JsonDocument& doc) {
@@ -1116,6 +1126,7 @@ void beginRemoteMqtt() {
   WiFi.setSleep(false);
   remoteMqttClient.setServer(REMOTE_MQTT_HOST_VALUE, REMOTE_MQTT_PORT_VALUE);
   remoteMqttClient.setCallback(onRemoteMqttMessage);
+  remoteMqttClient.setBufferSize(REMOTE_MQTT_BUFFER_SIZE);
 }
 #endif
 
