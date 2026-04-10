@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Heliostat Remote</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">Workshop Relay</p>
+        <h1>Heliostat Remote</h1>
+        <p class="subtitle">
+          Minimal control surface for the Raspberry Pi side of the remote-access stack.
+        </p>
+      </header>
+
+      <section class="status-card">
+        <h2>Status</h2>
+        <div class="status-grid">
+          <div>
+            <span class="label">Backend</span>
+            <span id="backend-status">Checking…</span>
+          </div>
+          <div>
+            <span class="label">MQTT</span>
+            <span id="mqtt-status">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Remote</span>
+            <span id="remote-status">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Mode</span>
+            <span id="remote-mode">Unknown</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="control-card">
+        <h2>Planned Controls</h2>
+        <div class="button-row">
+          <button type="button" id="mode-manual">Manual</button>
+          <button type="button" id="capture-target">Capture</button>
+          <button type="button" id="mode-auto">Auto</button>
+          <button type="button" id="recenter">Recenter</button>
+        </div>
+        <div class="manual-grid">
+          <label>
+            <span class="label">Pan Rate</span>
+            <input id="pan-rate" type="range" min="-1" max="1" step="0.01" value="0" />
+          </label>
+          <label>
+            <span class="label">Tilt Rate</span>
+            <input id="tilt-rate" type="range" min="-1" max="1" step="0.01" value="0" />
+          </label>
+        </div>
+        <label class="precision-toggle">
+          <input id="precision" type="checkbox" />
+          <span>Precision manual mode</span>
+        </label>
+        <p class="note">This is still a development UI, but it now publishes MQTT commands through the Pi backend.</p>
+      </section>
+
+      <section class="state-card">
+        <h2>Last State</h2>
+        <pre id="state-output">Loading…</pre>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+  </html>
