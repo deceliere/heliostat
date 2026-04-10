@@ -28,13 +28,46 @@ Then open:
 
 ## Current Status
 
-This is only a scaffold:
+Current status:
 
-- the UI is static
-- MQTT bridge is not implemented yet
+- the UI is available
+- FastAPI publishes MQTT commands
+- FastAPI subscribes to state, diag, and availability
 - no authentication yet
 - no persistence yet
 
 ## Next Step
 
-Add MQTT publish/subscribe support in the FastAPI app and connect the UI to real state.
+Run the MQTT simulator and validate the end-to-end path before touching the ESP32.
+
+## Simulator
+
+A minimal simulated remote is available in:
+
+`tools/simulated_remote.py`
+
+Run it from the Pi:
+
+```bash
+cd /opt/heliostat/remote-access/rpi
+source .venv/bin/activate
+python tools/simulated_remote.py
+```
+
+What it does:
+
+- subscribes to `cmd/mode`
+- subscribes to `cmd/manual`
+- subscribes to `cmd/action`
+- subscribes to `cmd/time`
+- publishes `state`
+- publishes `diag`
+- publishes retained `availability`
+
+This lets you validate:
+
+- web UI -> FastAPI
+- FastAPI -> MQTT
+- MQTT -> simulated remote
+- simulated remote -> MQTT state
+- MQTT state -> FastAPI -> UI
