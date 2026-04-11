@@ -109,7 +109,6 @@ function startJogging(axis, direction) {
 function bindStepButtons() {
   const buttons = document.querySelectorAll(".step-button");
   buttons.forEach((button) => {
-    suppressNativeTouchBehavior(button);
     button.addEventListener("dblclick", (event) => {
       event.preventDefault();
     });
@@ -201,17 +200,6 @@ function bindControlButtons() {
   const moveToButton = document.getElementById("move-to");
   const loadCurrentButton = document.getElementById("load-current");
   const syncTimeButton = document.getElementById("sync-time");
-
-  [
-    manualButton,
-    autoButton,
-    captureButton,
-    printDiagButton,
-    recenterButton,
-    moveToButton,
-    loadCurrentButton,
-    syncTimeButton,
-  ].forEach((button) => suppressNativeTouchBehavior(button));
 
   manualButton?.addEventListener("click", async () => {
     await stopJogging();
