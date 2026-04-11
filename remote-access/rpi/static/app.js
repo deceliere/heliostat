@@ -35,6 +35,20 @@ let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
 
+function suppressNativeTouchBehavior(element) {
+  if (!element) {
+    return;
+  }
+
+  const preventNative = (event) => {
+    event.preventDefault();
+  };
+
+  element.addEventListener("touchstart", preventNative, { passive: false });
+  element.addEventListener("touchend", preventNative, { passive: false });
+  element.addEventListener("touchcancel", preventNative, { passive: false });
+}
+
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) {
@@ -95,6 +109,7 @@ function startJogging(axis, direction) {
 function bindStepButtons() {
   const buttons = document.querySelectorAll(".step-button");
   buttons.forEach((button) => {
+    suppressNativeTouchBehavior(button);
     button.addEventListener("dblclick", (event) => {
       event.preventDefault();
     });
@@ -112,6 +127,7 @@ function bindJogButtons() {
     const axis = button.dataset.axis;
     const direction = Number(button.dataset.direction ?? "0");
 
+    suppressNativeTouchBehavior(button);
     button.addEventListener("dblclick", (event) => {
       event.preventDefault();
     });
@@ -177,42 +193,62 @@ function bindKeyboardJog() {
 }
 
 function bindControlButtons() {
-  document.getElementById("mode-manual")?.addEventListener("click", async () => {
+  const manualButton = document.getElementById("mode-manual");
+  const autoButton = document.getElementById("mode-auto");
+  const captureButton = document.getElementById("capture-target");
+  const printDiagButton = document.getElementById("print-diag");
+  const recenterButton = document.getElementById("recenter");
+  const moveToButton = document.getElementById("move-to");
+  const loadCurrentButton = document.getElementById("load-current");
+  const syncTimeButton = document.getElementById("sync-time");
+
+  [
+    manualButton,
+    autoButton,
+    captureButton,
+    printDiagButton,
+    recenterButton,
+    moveToButton,
+    loadCurrentButton,
+    syncTimeButton,
+  ].forEach((button) => suppressNativeTouchBehavior(button));
+
+  manualButton?.addEventListener("click", async () => {
     await stopJogging();
     await postJson("/api/cmd/mode", { mode: "manual" });
     await refreshUi();
   });
 
-  document.getElementById("mode-auto")?.addEventListener("click", async () => {
+  autoButton?.addEventListener("click", async () => {
     await stopJogging();
     await postJson("/api/cmd/mode", { mode: "auto" });
     await refreshUi();
   });
 
-  document.getElementById("capture-target")?.addEventListener("click", async () => {
+  captureButton?.addEventListener("click", async () => {
     await stopJogging();
     await postJson("/api/cmd/action", { action: "capture_target" });
     await refreshUi();
   });
 
-  document.getElementById("print-diag")?.addEventListener("click", async () => {
+  printDiagButton?.addEventListener("click", async () => {
     await postJson("/api/cmd/action", { action: "print_diag" });
     await refreshUi();
   });
 
-  document.getElementById("recenter")?.addEventListener("click", async () => {
+  recenterButton?.addEventListener("click", async () => {
     await stopJogging();
     await postJson("/api/cmd/move-to", { pan_deg: 90.0, tilt_deg: 90.0 });
     await refreshUi();
   });
 
-  document.getElementById("move-to")?.addEventListener("click", async () => {
+  moveToButton?.addEventListener("click", async () => {
     await stopJogging();
     await postJson("/api/cmd/move-to", readAbsoluteTargets());
     await refreshUi();
   });
 
-  document.getElementById("load-current")?.addEventListener("click", () => {
+  loadCurrentButton?.addEventListener("click", () => {
     const panInput = document.getElementById("pan-absolute");
     const tiltInput = document.getElementById("tilt-absolute");
     if (panInput && typeof latestState.pan_deg === "number") {
@@ -223,7 +259,7 @@ function bindControlButtons() {
     }
   });
 
-  document.getElementById("sync-time")?.addEventListener("click", async () => {
+  syncTimeButton?.addEventListener("click", async () => {
     await postJson("/api/cmd/time", {
       unix_utc: Math.floor(Date.now() / 1000),
       time_scale: 1.0,
