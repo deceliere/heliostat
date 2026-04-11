@@ -95,6 +95,9 @@ function startJogging(axis, direction) {
 function bindStepButtons() {
   const buttons = document.querySelectorAll(".step-button");
   buttons.forEach((button) => {
+    button.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+    });
     button.addEventListener("click", () => {
       selectedStepDeg = Number(button.dataset.step ?? "1");
       buttons.forEach((candidate) => candidate.classList.remove("active"));
@@ -109,6 +112,12 @@ function bindJogButtons() {
     const axis = button.dataset.axis;
     const direction = Number(button.dataset.direction ?? "0");
 
+    button.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+    });
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       startJogging(axis, direction);
@@ -245,5 +254,10 @@ bindStepButtons();
 bindJogButtons();
 bindKeyboardJog();
 bindControlButtons();
+document.addEventListener("selectstart", (event) => {
+  if (event.target instanceof HTMLElement && event.target.closest("button")) {
+    event.preventDefault();
+  }
+});
 refreshUi();
 setInterval(refreshUi, 250);
