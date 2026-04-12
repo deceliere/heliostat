@@ -32,6 +32,18 @@ runtime_state = {
     "tilt_target_deg": None,
     "pan_us": None,
     "tilt_us": None,
+    "scan_active": False,
+    "scan_stage": "idle",
+    "scan_center_pan_deg": None,
+    "scan_center_tilt_deg": None,
+    "scan_range_pan_deg": None,
+    "scan_range_tilt_deg": None,
+    "scan_step_deg": None,
+    "scan_point_index": 0,
+    "scan_points_total": 0,
+    "scan_lock_valid": False,
+    "scan_lock_pan_deg": None,
+    "scan_lock_tilt_deg": None,
     "remote_utc": None,
     "sun_time_ok": False,
     "target_ok": False,
@@ -102,6 +114,18 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           tilt_target_deg=data.get("tilt_target_deg"),
           pan_us=data.get("pan_us"),
           tilt_us=data.get("tilt_us"),
+          scan_active=bool(data.get("scan_active", False)),
+          scan_stage=data.get("scan_stage", "idle"),
+          scan_center_pan_deg=data.get("scan_center_pan_deg"),
+          scan_center_tilt_deg=data.get("scan_center_tilt_deg"),
+          scan_range_pan_deg=data.get("scan_range_pan_deg"),
+          scan_range_tilt_deg=data.get("scan_range_tilt_deg"),
+          scan_step_deg=data.get("scan_step_deg"),
+          scan_point_index=data.get("scan_point_index", 0),
+          scan_points_total=data.get("scan_points_total", 0),
+          scan_lock_valid=bool(data.get("scan_lock_valid", False)),
+          scan_lock_pan_deg=data.get("scan_lock_pan_deg"),
+          scan_lock_tilt_deg=data.get("scan_lock_tilt_deg"),
           remote_utc=data.get("remote_utc"),
           sun_time_ok=bool(data.get("sun_time_ok", False)),
           target_ok=bool(data.get("target_ok", False)),
@@ -212,6 +236,21 @@ def api_cmd_time(payload: dict) -> dict:
         "time_scale": float(payload.get("time_scale", 1.0)),
     }
     mqtt_client.publish(topic("cmd/time"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/scan/start")
+def api_cmd_scan_start(payload: dict) -> dict:
+    stage = payload.get("stage")
+    if stage not in {"coarse", "fine"}:
+        raise HTTPException(status_code=400, detail="invalid stage")
+
+    command = {
+        "stage": stage,
+        "center_pan_deg": float(payload.get("center_pan_deg")),
+        "center_tilt_deg": float(payload.get("center_tilt_deg")),
+    }
+    mqtt_client.publish(topic("cmd/scan"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 
 

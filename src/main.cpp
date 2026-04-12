@@ -86,6 +86,15 @@ constexpr uint32_t REMOTE_NTP_RETRY_MS = 15000;
 constexpr uint32_t REMOTE_NTP_RESYNC_MS = 60000;
 constexpr time_t MIN_VALID_UNIX_TIME_UTC = 1704067200;
 constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 512;
+constexpr float SCAN_SETTLE_TOLERANCE_DEG = 0.35f;
+constexpr uint32_t SCAN_COARSE_DWELL_MS = 450;
+constexpr uint32_t SCAN_FINE_DWELL_MS = 500;
+constexpr float SCAN_COARSE_RANGE_PAN_DEG = 6.0f;
+constexpr float SCAN_COARSE_RANGE_TILT_DEG = 6.0f;
+constexpr float SCAN_COARSE_STEP_DEG = 1.0f;
+constexpr float SCAN_FINE_RANGE_PAN_DEG = 1.5f;
+constexpr float SCAN_FINE_RANGE_TILT_DEG = 1.5f;
+constexpr float SCAN_FINE_STEP_DEG = 0.25f;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif
@@ -134,6 +143,12 @@ enum ControlMode : uint8_t {
   CONTROL_MODE_AUTO_TRACK = 2,
 };
 
+enum ScanStage : uint8_t {
+  SCAN_STAGE_IDLE = 0,
+  SCAN_STAGE_COARSE = 1,
+  SCAN_STAGE_FINE = 2,
+};
+
 const char* controlModeName(ControlMode mode) {
   switch (mode) {
     case CONTROL_MODE_MANUAL:
@@ -142,6 +157,19 @@ const char* controlModeName(ControlMode mode) {
       return "captured";
     case CONTROL_MODE_AUTO_TRACK:
       return "auto";
+    default:
+      return "unknown";
+  }
+}
+
+const char* scanStageName(ScanStage stage) {
+  switch (stage) {
+    case SCAN_STAGE_IDLE:
+      return "idle";
+    case SCAN_STAGE_COARSE:
+      return "coarse";
+    case SCAN_STAGE_FINE:
+      return "fine";
     default:
       return "unknown";
   }
@@ -239,6 +267,22 @@ uint32_t lastNtpSyncAttemptMs = 0;
 uint32_t lastNtpApplyMs = 0;
 bool ntpConfigured = false;
 bool ntpTimeValid = false;
+bool scanActive = false;
+ScanStage scanStage = SCAN_STAGE_IDLE;
+float scanCenterPanDeg = PAN_START_DEG;
+float scanCenterTiltDeg = TILT_START_DEG;
+float scanRangePanDeg = 0.0f;
+float scanRangeTiltDeg = 0.0f;
+float scanStepDeg = 0.0f;
+uint16_t scanGridCols = 0;
+uint16_t scanGridRows = 0;
+uint16_t scanPointIndex = 0;
+uint16_t scanPointsTotal = 0;
+uint32_t scanDwellMs = 0;
+uint32_t scanPointReachedMs = 0;
+bool scanLockValid = false;
+float scanLockPanDeg = PAN_START_DEG;
+float scanLockTiltDeg = TILT_START_DEG;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
@@ -703,6 +747,7 @@ void publishRemoteDiag(const char* event) {
   JsonDocument doc;
   doc["event"] = event;
   doc["mode"] = controlModeName(controlMode);
+  doc["scan_stage"] = scanStageName(scanStage);
   doc["pan_deg"] = panAngleDeg;
   doc["tilt_deg"] = tiltAngleDeg;
   time_t unixTimeUtc = 0;
@@ -738,6 +783,18 @@ void publishRemoteState(bool force = false) {
   doc["tilt_target_deg"] = tiltTargetDeg;
   doc["pan_us"] = lastPanPulseUs;
   doc["tilt_us"] = lastTiltPulseUs;
+  doc["scan_active"] = scanActive;
+  doc["scan_stage"] = scanStageName(scanStage);
+  doc["scan_center_pan_deg"] = scanCenterPanDeg;
+  doc["scan_center_tilt_deg"] = scanCenterTiltDeg;
+  doc["scan_range_pan_deg"] = scanRangePanDeg;
+  doc["scan_range_tilt_deg"] = scanRangeTiltDeg;
+  doc["scan_step_deg"] = scanStepDeg;
+  doc["scan_point_index"] = scanPointIndex;
+  doc["scan_points_total"] = scanPointsTotal;
+  doc["scan_lock_valid"] = scanLockValid;
+  doc["scan_lock_pan_deg"] = scanLockPanDeg;
+  doc["scan_lock_tilt_deg"] = scanLockTiltDeg;
   doc["sun_time_ok"] = sunTimeValid;
   doc["target_ok"] = targetDirectionValid;
   doc["auto_enabled"] = autoTrackEnabled;
@@ -759,9 +816,83 @@ void publishRemoteState(bool force = false) {
   }
 }
 
+void stopScan() {
+  scanActive = false;
+  scanStage = SCAN_STAGE_IDLE;
+  scanPointReachedMs = 0;
+}
+
+void setScanTargetForIndex(uint16_t index) {
+  if (scanGridCols == 0 || scanGridRows == 0 || index >= scanPointsTotal) {
+    return;
+  }
+
+  const uint16_t row = index / scanGridCols;
+  uint16_t col = index % scanGridCols;
+  if ((row % 2u) == 1u) {
+    col = static_cast<uint16_t>((scanGridCols - 1u) - col);
+  }
+
+  const float pan = scanCenterPanDeg - scanRangePanDeg + (static_cast<float>(col) * scanStepDeg);
+  const float tilt = scanCenterTiltDeg - scanRangeTiltDeg + (static_cast<float>(row) * scanStepDeg);
+  panTargetDeg = constrain(pan, PAN_MIN_DEG, PAN_MAX_DEG);
+  tiltTargetDeg = constrain(tilt, TILT_MIN_DEG, TILT_MAX_DEG);
+}
+
+void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg) {
+  autoTrackEnabled = false;
+  controlMode = CONTROL_MODE_MANUAL;
+  remotePanInput = 0.0f;
+  remoteTiltInput = 0.0f;
+  precisionManualMode = false;
+
+  scanStage = stage;
+  scanActive = true;
+  scanCenterPanDeg = constrain(centerPanDeg, PAN_MIN_DEG, PAN_MAX_DEG);
+  scanCenterTiltDeg = constrain(centerTiltDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+  if (stage == SCAN_STAGE_COARSE) {
+    scanRangePanDeg = SCAN_COARSE_RANGE_PAN_DEG;
+    scanRangeTiltDeg = SCAN_COARSE_RANGE_TILT_DEG;
+    scanStepDeg = SCAN_COARSE_STEP_DEG;
+    scanDwellMs = SCAN_COARSE_DWELL_MS;
+  } else {
+    scanRangePanDeg = SCAN_FINE_RANGE_PAN_DEG;
+    scanRangeTiltDeg = SCAN_FINE_RANGE_TILT_DEG;
+    scanStepDeg = SCAN_FINE_STEP_DEG;
+    scanDwellMs = SCAN_FINE_DWELL_MS;
+  }
+
+  scanGridCols = static_cast<uint16_t>(lroundf((scanRangePanDeg * 2.0f) / scanStepDeg)) + 1u;
+  scanGridRows = static_cast<uint16_t>(lroundf((scanRangeTiltDeg * 2.0f) / scanStepDeg)) + 1u;
+  scanPointsTotal = static_cast<uint16_t>(scanGridCols * scanGridRows);
+  scanPointIndex = 0;
+  scanPointReachedMs = 0;
+  setScanTargetForIndex(scanPointIndex);
+}
+
+void handleRemoteScanCommand(const JsonDocument& doc) {
+  const char* stage = doc["stage"] | "";
+  if (strcmp(stage, "off") == 0) {
+    stopScan();
+    return;
+  }
+
+  const float defaultCenterPan = scanLockValid ? scanLockPanDeg : panTargetDeg;
+  const float defaultCenterTilt = scanLockValid ? scanLockTiltDeg : tiltTargetDeg;
+  const float centerPan = doc["center_pan_deg"] | defaultCenterPan;
+  const float centerTilt = doc["center_tilt_deg"] | defaultCenterTilt;
+
+  if (strcmp(stage, "coarse") == 0) {
+    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt);
+  } else if (strcmp(stage, "fine") == 0) {
+    startScan(SCAN_STAGE_FINE, centerPan, centerTilt);
+  }
+}
+
 void handleRemoteModeCommand(const JsonDocument& doc) {
   const char* mode = doc["mode"] | "";
   if (strcmp(mode, "manual") == 0) {
+    stopScan();
     autoTrackEnabled = false;
     controlMode = CONTROL_MODE_MANUAL;
     remotePanInput = 0.0f;
@@ -779,6 +910,7 @@ void handleRemoteModeCommand(const JsonDocument& doc) {
 }
 
 void handleRemoteManualCommand(const JsonDocument& doc) {
+  stopScan();
   remotePanInput = constrain(doc["pan_rate"] | 0.0f, -1.0f, 1.0f);
   remoteTiltInput = constrain(doc["tilt_rate"] | 0.0f, -1.0f, 1.0f);
   precisionManualMode = doc["precision"] | false;
@@ -793,6 +925,7 @@ void handleRemoteJogCommand(const JsonDocument& doc) {
     return;
   }
 
+  stopScan();
   autoTrackEnabled = false;
   controlMode = CONTROL_MODE_MANUAL;
   remotePanInput = 0.0f;
@@ -807,6 +940,7 @@ void handleRemoteJogCommand(const JsonDocument& doc) {
 }
 
 void handleRemoteMoveToCommand(const JsonDocument& doc) {
+  stopScan();
   autoTrackEnabled = false;
   controlMode = CONTROL_MODE_MANUAL;
   remotePanInput = 0.0f;
@@ -821,6 +955,7 @@ void handleRemoteActionCommand(const JsonDocument& doc) {
   if (strcmp(action, "capture_target") == 0) {
     captureTargetRequested = true;
   } else if (strcmp(action, "recenter") == 0) {
+    stopScan();
     autoTrackEnabled = false;
     controlMode = CONTROL_MODE_MANUAL;
     remotePanInput = 0.0f;
@@ -828,6 +963,12 @@ void handleRemoteActionCommand(const JsonDocument& doc) {
     precisionManualMode = false;
     panTargetDeg = PAN_START_DEG;
     tiltTargetDeg = TILT_START_DEG;
+  } else if (strcmp(action, "beam_seen") == 0) {
+    scanLockValid = true;
+    scanLockPanDeg = panTargetDeg;
+    scanLockTiltDeg = tiltTargetDeg;
+    stopScan();
+    publishRemoteDiag("beam_seen");
   } else if (strcmp(action, "print_diag") == 0) {
     printRemoteTrackingDiagnostic();
     publishRemoteDiag("print_diag");
@@ -865,6 +1006,8 @@ void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length
     handleRemoteJogCommand(doc);
   } else if (topicString == mqttTopic("cmd/move_to")) {
     handleRemoteMoveToCommand(doc);
+  } else if (topicString == mqttTopic("cmd/scan")) {
+    handleRemoteScanCommand(doc);
   } else if (topicString == mqttTopic("cmd/manual")) {
     handleRemoteManualCommand(doc);
   } else if (topicString == mqttTopic("cmd/action")) {
@@ -959,6 +1102,7 @@ void ensureRemoteMqttConnected(uint32_t nowMs) {
   remoteMqttClient.subscribe(mqttTopic("cmd/mode").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/jog").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/move_to").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/scan").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/manual").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/action").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/time").c_str());
@@ -1088,6 +1232,40 @@ void updateTargetsFromRemoteInput(uint32_t nowMs) {
   tiltTargetDeg = constrain(
       tiltTargetDeg + (applySpeedCurve(remoteTiltInput) * manualSpeedDegPerSec * dt),
       TILT_MIN_DEG, TILT_MAX_DEG);
+}
+
+void updateScanState(uint32_t nowMs) {
+  if (!scanActive || controlMode == CONTROL_MODE_AUTO_TRACK || scanPointsTotal == 0) {
+    return;
+  }
+
+  const bool onTarget =
+      fabsf(panAngleDeg - panTargetDeg) <= SCAN_SETTLE_TOLERANCE_DEG &&
+      fabsf(tiltAngleDeg - tiltTargetDeg) <= SCAN_SETTLE_TOLERANCE_DEG;
+
+  if (!onTarget) {
+    scanPointReachedMs = 0;
+    return;
+  }
+
+  if (scanPointReachedMs == 0) {
+    scanPointReachedMs = nowMs;
+    return;
+  }
+
+  if ((nowMs - scanPointReachedMs) < scanDwellMs) {
+    return;
+  }
+
+  ++scanPointIndex;
+  if (scanPointIndex >= scanPointsTotal) {
+    stopScan();
+    publishRemoteDiag("scan_completed");
+    return;
+  }
+
+  scanPointReachedMs = 0;
+  setScanTargetForIndex(scanPointIndex);
 }
 
 void moveServosTowardTargets(uint32_t nowMs) {
@@ -1673,6 +1851,7 @@ void loop() {
     remoteMqttClient.loop();
   }
   updateTargetsFromRemoteInput(nowMs);
+  updateScanState(nowMs);
   moveServosTowardTargets(nowMs);
   applyLedFromPanTilt(nowMs);
   publishRemoteState();

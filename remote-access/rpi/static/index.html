@@ -102,6 +102,31 @@
         </div>
       </section>
 
+      <section class="control-card">
+        <h2>Beam Scan</h2>
+        <div class="status-grid scan-status-grid">
+          <div>
+            <span class="label">Scan Stage</span>
+            <span id="scan-stage" class="status-pill">Idle</span>
+          </div>
+          <div>
+            <span class="label">Scan Progress</span>
+            <span id="scan-progress" class="status-pill">0 / 0</span>
+          </div>
+          <div>
+            <span class="label">Last Beam Lock</span>
+            <span id="scan-lock" class="status-pill">None</span>
+          </div>
+        </div>
+        <div class="button-row">
+          <button type="button" id="start-coarse-scan">Start Coarse Scan</button>
+          <button type="button" id="beam-seen">I See The Beam</button>
+          <button type="button" id="start-fine-scan">Start Fine Scan</button>
+          <button type="button" id="use-scan-lock">Use Beam Lock</button>
+        </div>
+        <p class="note">Use the approximate pan/tilt above as the scan center. When the beam reaches you, press “I See The Beam”, then start the fine scan.</p>
+      </section>
+
       <section class="state-card">
         <h2>Last State</h2>
         <pre id="state-output">Loading…</pre>
