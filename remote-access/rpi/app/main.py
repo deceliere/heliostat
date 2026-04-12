@@ -193,7 +193,7 @@ def api_cmd_mode(payload: dict) -> dict:
 @app.post("/api/cmd/action")
 def api_cmd_action(payload: dict) -> dict:
     action = payload.get("action")
-    if action not in {"capture_target", "recenter", "print_diag"}:
+    if action not in {"capture_target", "recenter", "print_diag", "beam_seen"}:
         raise HTTPException(status_code=400, detail="invalid action")
     mqtt_client.publish(topic("cmd/action"), json.dumps({"action": action}), qos=1)
     return {"ok": True, "published": True}

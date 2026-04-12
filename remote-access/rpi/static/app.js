@@ -34,6 +34,7 @@ let selectedStepDeg = 0.1;
 let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
+let scanSpeedSlider = null;
 
 function scanSpeedToDwellMs(speedValue) {
   const speed = Math.max(1, Math.min(10, Number(speedValue) || 6));
@@ -224,7 +225,7 @@ function bindControlButtons() {
   const startFineScanButton = document.getElementById("start-fine-scan");
   const stopScanButton = document.getElementById("stop-scan");
   const useScanLockButton = document.getElementById("use-scan-lock");
-  const scanSpeedSlider = document.getElementById("scan-speed");
+  scanSpeedSlider = document.getElementById("scan-speed");
   const scanSpeedValue = document.getElementById("scan-speed-value");
 
   const refreshScanSpeedLabel = () => {
