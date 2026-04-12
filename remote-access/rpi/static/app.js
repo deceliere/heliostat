@@ -35,6 +35,11 @@ let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
 
+function scanSpeedToDwellMs(speedValue) {
+  const speed = Math.max(1, Math.min(10, Number(speedValue) || 6));
+  return Math.round(980 - (speed * 80));
+}
+
 function suppressNativeTouchBehavior(element) {
   if (!element) {
     return;
@@ -217,7 +222,20 @@ function bindControlButtons() {
   const startCoarseScanButton = document.getElementById("start-coarse-scan");
   const beamSeenButton = document.getElementById("beam-seen");
   const startFineScanButton = document.getElementById("start-fine-scan");
+  const stopScanButton = document.getElementById("stop-scan");
   const useScanLockButton = document.getElementById("use-scan-lock");
+  const scanSpeedSlider = document.getElementById("scan-speed");
+  const scanSpeedValue = document.getElementById("scan-speed-value");
+
+  const refreshScanSpeedLabel = () => {
+    if (!scanSpeedSlider) {
+      return;
+    }
+    setStatusPill("scan-speed-value", `${scanSpeedSlider.value}`, "slate");
+  };
+
+  scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
+  refreshScanSpeedLabel();
 
   manualButton?.addEventListener("click", async () => {
     await stopJogging();
@@ -279,6 +297,7 @@ function bindControlButtons() {
       stage: "coarse",
       center_pan_deg: targets.pan_deg,
       center_tilt_deg: targets.tilt_deg,
+      dwell_ms: scanSpeedToDwellMs(scanSpeedSlider?.value),
     });
     await refreshUi();
   });
@@ -297,7 +316,13 @@ function bindControlButtons() {
       stage: "fine",
       center_pan_deg: panCenter,
       center_tilt_deg: tiltCenter,
+      dwell_ms: scanSpeedToDwellMs(scanSpeedSlider?.value),
     });
+    await refreshUi();
+  });
+
+  stopScanButton?.addEventListener("click", async () => {
+    await postJson("/api/cmd/scan/stop", {});
     await refreshUi();
   });
 
@@ -362,6 +387,16 @@ async function refreshUi() {
       setStatusPill("scan-lock", `${state.scan_lock_pan_deg.toFixed(2)} / ${state.scan_lock_tilt_deg.toFixed(2)}`, "green");
     } else {
       setStatusPill("scan-lock", "None", "amber");
+    }
+
+    if (typeof state.pan_deg === "number" && typeof state.tilt_deg === "number") {
+      setStatusPill("scan-current", `${state.pan_deg.toFixed(2)} / ${state.tilt_deg.toFixed(2)}`, "slate");
+    } else {
+      setStatusPill("scan-current", "Unknown", "amber");
+    }
+
+    if (typeof state.scan_dwell_ms === "number" && state.scan_dwell_ms > 0) {
+      setStatusPill("scan-speed-value", `${scanSpeedSlider?.value ?? 6}`, "slate");
     }
 
     setText("state-output", JSON.stringify(state, null, 2));

@@ -39,6 +39,7 @@ runtime_state = {
     "scan_range_pan_deg": None,
     "scan_range_tilt_deg": None,
     "scan_step_deg": None,
+    "scan_dwell_ms": None,
     "scan_point_index": 0,
     "scan_points_total": 0,
     "scan_lock_valid": False,
@@ -121,6 +122,7 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           scan_range_pan_deg=data.get("scan_range_pan_deg"),
           scan_range_tilt_deg=data.get("scan_range_tilt_deg"),
           scan_step_deg=data.get("scan_step_deg"),
+          scan_dwell_ms=data.get("scan_dwell_ms"),
           scan_point_index=data.get("scan_point_index", 0),
           scan_points_total=data.get("scan_points_total", 0),
           scan_lock_valid=bool(data.get("scan_lock_valid", False)),
@@ -249,7 +251,15 @@ def api_cmd_scan_start(payload: dict) -> dict:
         "stage": stage,
         "center_pan_deg": float(payload.get("center_pan_deg")),
         "center_tilt_deg": float(payload.get("center_tilt_deg")),
+        "dwell_ms": int(payload.get("dwell_ms", 0)),
     }
+    mqtt_client.publish(topic("cmd/scan"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/scan/stop")
+def api_cmd_scan_stop() -> dict:
+    command = {"stage": "off"}
     mqtt_client.publish(topic("cmd/scan"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 

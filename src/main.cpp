@@ -790,6 +790,7 @@ void publishRemoteState(bool force = false) {
   doc["scan_range_pan_deg"] = scanRangePanDeg;
   doc["scan_range_tilt_deg"] = scanRangeTiltDeg;
   doc["scan_step_deg"] = scanStepDeg;
+  doc["scan_dwell_ms"] = scanDwellMs;
   doc["scan_point_index"] = scanPointIndex;
   doc["scan_points_total"] = scanPointsTotal;
   doc["scan_lock_valid"] = scanLockValid;
@@ -834,12 +835,12 @@ void setScanTargetForIndex(uint16_t index) {
   }
 
   const float pan = scanCenterPanDeg - scanRangePanDeg + (static_cast<float>(col) * scanStepDeg);
-  const float tilt = scanCenterTiltDeg - scanRangeTiltDeg + (static_cast<float>(row) * scanStepDeg);
+  const float tilt = scanCenterTiltDeg + scanRangeTiltDeg - (static_cast<float>(row) * scanStepDeg);
   panTargetDeg = constrain(pan, PAN_MIN_DEG, PAN_MAX_DEG);
   tiltTargetDeg = constrain(tilt, TILT_MIN_DEG, TILT_MAX_DEG);
 }
 
-void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg) {
+void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg, uint32_t dwellMsOverride) {
   autoTrackEnabled = false;
   controlMode = CONTROL_MODE_MANUAL;
   remotePanInput = 0.0f;
@@ -862,6 +863,10 @@ void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg) {
     scanDwellMs = SCAN_FINE_DWELL_MS;
   }
 
+  if (dwellMsOverride > 0) {
+    scanDwellMs = dwellMsOverride;
+  }
+
   scanGridCols = static_cast<uint16_t>(lroundf((scanRangePanDeg * 2.0f) / scanStepDeg)) + 1u;
   scanGridRows = static_cast<uint16_t>(lroundf((scanRangeTiltDeg * 2.0f) / scanStepDeg)) + 1u;
   scanPointsTotal = static_cast<uint16_t>(scanGridCols * scanGridRows);
@@ -873,6 +878,8 @@ void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg) {
 void handleRemoteScanCommand(const JsonDocument& doc) {
   const char* stage = doc["stage"] | "";
   if (strcmp(stage, "off") == 0) {
+    panTargetDeg = panAngleDeg;
+    tiltTargetDeg = tiltAngleDeg;
     stopScan();
     return;
   }
@@ -881,11 +888,12 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   const float defaultCenterTilt = scanLockValid ? scanLockTiltDeg : tiltTargetDeg;
   const float centerPan = doc["center_pan_deg"] | defaultCenterPan;
   const float centerTilt = doc["center_tilt_deg"] | defaultCenterTilt;
+  const uint32_t dwellMs = doc["dwell_ms"] | 0;
 
   if (strcmp(stage, "coarse") == 0) {
-    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt);
+    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt, dwellMs);
   } else if (strcmp(stage, "fine") == 0) {
-    startScan(SCAN_STAGE_FINE, centerPan, centerTilt);
+    startScan(SCAN_STAGE_FINE, centerPan, centerTilt, dwellMs);
   }
 }
 
@@ -965,8 +973,10 @@ void handleRemoteActionCommand(const JsonDocument& doc) {
     tiltTargetDeg = TILT_START_DEG;
   } else if (strcmp(action, "beam_seen") == 0) {
     scanLockValid = true;
-    scanLockPanDeg = panTargetDeg;
-    scanLockTiltDeg = tiltTargetDeg;
+    scanLockPanDeg = panAngleDeg;
+    scanLockTiltDeg = tiltAngleDeg;
+    panTargetDeg = panAngleDeg;
+    tiltTargetDeg = tiltAngleDeg;
     stopScan();
     publishRemoteDiag("beam_seen");
   } else if (strcmp(action, "print_diag") == 0) {

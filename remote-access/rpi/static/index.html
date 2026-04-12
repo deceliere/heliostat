@@ -117,11 +117,24 @@
             <span class="label">Last Beam Lock</span>
             <span id="scan-lock" class="status-pill">None</span>
           </div>
+          <div>
+            <span class="label">Current Position</span>
+            <span id="scan-current" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Scan Speed</span>
+            <span id="scan-speed-value" class="status-pill">6</span>
+          </div>
         </div>
+        <label>
+          <span class="label">Scan Speed</span>
+          <input id="scan-speed" type="range" min="1" max="10" step="1" value="6" />
+        </label>
         <div class="button-row">
           <button type="button" id="start-coarse-scan">Start Coarse Scan</button>
           <button type="button" id="beam-seen">I See The Beam</button>
           <button type="button" id="start-fine-scan">Start Fine Scan</button>
+          <button type="button" id="stop-scan">Stop Scan</button>
           <button type="button" id="use-scan-lock">Use Beam Lock</button>
         </div>
         <p class="note">Use the approximate pan/tilt above as the scan center. When the beam reaches you, press “I See The Beam”, then start the fine scan.</p>
