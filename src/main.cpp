@@ -99,6 +99,7 @@ constexpr float SCAN_FINE_STEP_DEG = 0.25f;
 constexpr float SCAN_MICRO_RANGE_PAN_DEG = 0.5f;
 constexpr float SCAN_MICRO_RANGE_TILT_DEG = 0.5f;
 constexpr float SCAN_MICRO_STEP_DEG = 0.1f;
+constexpr float SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC = 800.0f;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif
@@ -288,6 +289,7 @@ uint16_t scanGridRows = 0;
 uint16_t scanPointIndex = 0;
 uint16_t scanPointsTotal = 0;
 uint32_t scanDwellMs = 0;
+float scanMoveSpeedDegPerSec = SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC;
 uint32_t scanPointReachedMs = 0;
 bool scanLockValid = false;
 float scanLockPanDeg = PAN_START_DEG;
@@ -802,6 +804,7 @@ void publishRemoteState(bool force = false) {
   doc["scan_range_tilt_deg"] = scanRangeTiltDeg;
   doc["scan_step_deg"] = scanStepDeg;
   doc["scan_dwell_ms"] = scanDwellMs;
+  doc["scan_move_speed_deg_per_sec"] = scanMoveSpeedDegPerSec;
   doc["scan_point_index"] = scanPointIndex;
   doc["scan_points_total"] = scanPointsTotal;
   doc["scan_lock_valid"] = scanLockValid;
@@ -885,6 +888,7 @@ void startScan(ScanStage stage,
                float centerPanDeg,
                float centerTiltDeg,
                uint32_t dwellMsOverride,
+               float moveSpeedOverrideDegPerSec = -1.0f,
                float rangePanOverrideDeg = -1.0f,
                float rangeTiltOverrideDeg = -1.0f,
                int8_t direction = 1) {
@@ -919,6 +923,10 @@ void startScan(ScanStage stage,
 
   if (dwellMsOverride > 0) {
     scanDwellMs = dwellMsOverride;
+  }
+  scanMoveSpeedDegPerSec = SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC;
+  if (moveSpeedOverrideDegPerSec > 0.0f) {
+    scanMoveSpeedDegPerSec = moveSpeedOverrideDegPerSec;
   }
   if (rangePanOverrideDeg > 0.0f) {
     scanRangePanDeg = rangePanOverrideDeg;
@@ -962,17 +970,18 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   const float centerPan = doc["center_pan_deg"] | defaultCenterPan;
   const float centerTilt = doc["center_tilt_deg"] | defaultCenterTilt;
   const uint32_t dwellMs = doc["dwell_ms"] | 0;
+  const float moveSpeedDegPerSec = doc["move_speed_deg_per_sec"] | -1.0f;
   const char* directionString = doc["direction"] | "forward";
   const int8_t direction = (strcmp(directionString, "backward") == 0) ? -1 : 1;
   const float rangePanDeg = doc["range_pan_deg"] | -1.0f;
   const float rangeTiltDeg = doc["range_tilt_deg"] | -1.0f;
 
   if (strcmp(stage, "coarse") == 0) {
-    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt, dwellMs, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt, dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "fine") == 0) {
-    startScan(SCAN_STAGE_FINE, centerPan, centerTilt, dwellMs, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_FINE, centerPan, centerTilt, dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "micro") == 0) {
-    startScan(SCAN_STAGE_MICRO, centerPan, centerTilt, dwellMs, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_MICRO, centerPan, centerTilt, dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
   }
 }
 
@@ -1371,7 +1380,8 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   lastServoUpdateMs = nowMs;
 
-  const float maxStep = SERVO_MAX_SLEW_DEG_PER_SEC * (static_cast<float>(elapsedMs) / 1000.0f);
+  const float slewSpeedDegPerSec = scanActive ? scanMoveSpeedDegPerSec : SERVO_MAX_SLEW_DEG_PER_SEC;
+  const float maxStep = slewSpeedDegPerSec * (static_cast<float>(elapsedMs) / 1000.0f);
 
   panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);
   tiltAngleDeg = stepToward(tiltAngleDeg, tiltTargetDeg, maxStep);

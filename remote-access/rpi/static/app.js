@@ -35,10 +35,16 @@ let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
 let scanSpeedSlider = null;
+let scanDwellSlider = null;
 
 function scanSpeedToDwellMs(speedValue) {
   const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
   return Math.round(1040 - (speed * 42));
+}
+
+function scanSliderToMoveSpeedDegPerSec(speedValue) {
+  const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
+  return Math.round(100 + ((speed - 1) * ((2200 - 100) / 19)));
 }
 
 function readScanRangeOverrideDeg() {
@@ -238,24 +244,33 @@ function bindControlButtons() {
   const resumeForwardScanButton = document.getElementById("resume-forward-scan");
   const useScanLockButton = document.getElementById("use-scan-lock");
   scanSpeedSlider = document.getElementById("scan-speed");
-  const scanSpeedValue = document.getElementById("scan-speed-value");
+  scanDwellSlider = document.getElementById("scan-dwell");
 
   const refreshScanSpeedLabel = () => {
     if (!scanSpeedSlider) {
       return;
     }
-    setStatusPill("scan-speed-value", `${scanSpeedSlider.value}`, "slate");
+    setStatusPill("scan-speed-value", `${scanSliderToMoveSpeedDegPerSec(scanSpeedSlider.value).toFixed(0)}°/s`, "slate");
+  };
+  const refreshScanDwellLabel = () => {
+    if (!scanDwellSlider) {
+      return;
+    }
+    setStatusPill("scan-dwell-value", `${scanSpeedToDwellMs(scanDwellSlider.value)} ms`, "slate");
   };
 
   scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
+  scanDwellSlider?.addEventListener("input", refreshScanDwellLabel);
   refreshScanSpeedLabel();
+  refreshScanDwellLabel();
 
   const buildScanCommand = (stage, panCenter, tiltCenter) => {
     const command = {
       stage,
       center_pan_deg: panCenter,
       center_tilt_deg: tiltCenter,
-      dwell_ms: scanSpeedToDwellMs(scanSpeedSlider?.value),
+      dwell_ms: scanSpeedToDwellMs(scanDwellSlider?.value),
+      move_speed_deg_per_sec: scanSliderToMoveSpeedDegPerSec(scanSpeedSlider?.value),
       direction: "forward",
     };
     const rangeOverrideDeg = readScanRangeOverrideDeg();
@@ -461,8 +476,12 @@ async function refreshUi() {
       setStatusPill("scan-current", "Unknown", "amber");
     }
 
+    if (typeof state.scan_move_speed_deg_per_sec === "number" && state.scan_move_speed_deg_per_sec > 0) {
+      setStatusPill("scan-speed-value", `${state.scan_move_speed_deg_per_sec.toFixed(0)}°/s`, "slate");
+    }
+
     if (typeof state.scan_dwell_ms === "number" && state.scan_dwell_ms > 0) {
-      setStatusPill("scan-speed-value", `${scanSpeedSlider?.value ?? 6}`, "slate");
+      setStatusPill("scan-dwell-value", `${state.scan_dwell_ms} ms`, "slate");
     }
 
     setText("state-output", JSON.stringify(state, null, 2));
