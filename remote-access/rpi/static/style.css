@@ -86,6 +86,64 @@ h2 {
   margin-bottom: 6px;
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  background: rgba(89, 102, 89, 0.12);
+  color: var(--ink);
+  border: 1px solid rgba(89, 102, 89, 0.14);
+}
+
+.status-pill.tone-green {
+  background: rgba(88, 153, 93, 0.18);
+  border-color: rgba(88, 153, 93, 0.32);
+  color: #204425;
+}
+
+.status-pill.tone-red {
+  background: rgba(184, 76, 76, 0.16);
+  border-color: rgba(184, 76, 76, 0.28);
+  color: #6b1d1d;
+}
+
+.status-pill.tone-amber {
+  background: rgba(207, 151, 57, 0.18);
+  border-color: rgba(207, 151, 57, 0.3);
+  color: #6a4b07;
+}
+
+.status-pill.tone-rose {
+  background: rgba(201, 84, 132, 0.16);
+  border-color: rgba(201, 84, 132, 0.28);
+  color: #6d1d46;
+}
+
+.status-pill.tone-slate {
+  background: rgba(80, 93, 112, 0.16);
+  border-color: rgba(80, 93, 112, 0.24);
+  color: #243142;
+}
+
+.status-pill.blink {
+  animation: statusBlink 1s ease-in-out infinite;
+}
+
+@keyframes statusBlink {
+  0%, 100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(0.98);
+    filter: brightness(1.12);
+  }
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;

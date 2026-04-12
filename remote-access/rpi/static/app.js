@@ -30,7 +30,7 @@ async function postJson(url, payload) {
   return response.json();
 }
 
-let selectedStepDeg = 1.0;
+let selectedStepDeg = 0.1;
 let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
@@ -54,6 +54,16 @@ function setText(id, value) {
   if (node) {
     node.textContent = value;
   }
+}
+
+function setStatusPill(id, value, tone = "slate", blink = false) {
+  const node = document.getElementById(id);
+  if (!node) {
+    return;
+  }
+
+  node.textContent = value;
+  node.className = `status-pill tone-${tone}${blink ? " blink" : ""}`;
 }
 
 function formatUtc(unixUtc) {
@@ -108,6 +118,10 @@ function startJogging(axis, direction) {
 
 function bindStepButtons() {
   const buttons = document.querySelectorAll(".step-button");
+  const activeButton = document.querySelector(".step-button.active");
+  if (activeButton) {
+    selectedStepDeg = Number(activeButton.dataset.step ?? "0.1");
+  }
   buttons.forEach((button) => {
     button.addEventListener("dblclick", (event) => {
       event.preventDefault();
@@ -260,16 +274,36 @@ async function refreshUi() {
   try {
     const [health, state] = await Promise.all([loadHealth(), loadState()]);
     latestState = state;
-    setText("backend-status", health.ok ? "Online" : "Offline");
-    setText("mqtt-status", health.mqtt_connected ? "Connected" : "Disconnected");
-    setText("remote-status", health.remote_online ? "Online" : "Offline");
-    setText("remote-mode", state.mode ?? "Unknown");
-    setText("remote-time", formatUtc(state.remote_utc));
-    setText("time-source", state.time_source ?? "unknown");
-    setText("state-updated", formatUnixMs(state.last_state_update_unix_ms));
+    setStatusPill("backend-status", health.ok ? "Online" : "Offline", health.ok ? "green" : "red");
+    setStatusPill("mqtt-status", health.mqtt_connected ? "Connected" : "Disconnected", health.mqtt_connected ? "green" : "red");
+    setStatusPill("remote-status", health.remote_online ? "Online" : "Offline", health.remote_online ? "green" : "amber");
+
+    const mode = state.mode ?? "Unknown";
+    if (mode === "auto") {
+      setStatusPill("remote-mode", "Auto", "green", true);
+    } else if (mode === "manual") {
+      setStatusPill("remote-mode", "Manual", "rose");
+    } else if (mode === "captured") {
+      setStatusPill("remote-mode", "Captured", "amber");
+    } else {
+      setStatusPill("remote-mode", mode, "slate");
+    }
+
+    setStatusPill("remote-time", formatUtc(state.remote_utc), state.remote_utc ? "green" : "amber");
+
+    const timeSource = state.time_source ?? "unknown";
+    if (timeSource === "ntp") {
+      setStatusPill("time-source", "NTP", "green");
+    } else if (timeSource === "mqtt") {
+      setStatusPill("time-source", "MQTT", "amber");
+    } else {
+      setStatusPill("time-source", timeSource, "slate");
+    }
+
+    setStatusPill("state-updated", formatUnixMs(state.last_state_update_unix_ms), state.last_state_update_unix_ms ? "slate" : "amber");
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {
-    setText("backend-status", "Error");
+    setStatusPill("backend-status", "Error", "red");
     setText("state-output", String(error));
   }
 }
