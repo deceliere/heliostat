@@ -110,8 +110,16 @@
             <span id="scan-stage" class="status-pill">Idle</span>
           </div>
           <div>
+            <span class="label">Direction</span>
+            <span id="scan-direction" class="status-pill">Forward</span>
+          </div>
+          <div>
             <span class="label">Scan Progress</span>
             <span id="scan-progress" class="status-pill">0 / 0</span>
+          </div>
+          <div>
+            <span class="label">Scan Width</span>
+            <span id="scan-width-current" class="status-pill">Default</span>
           </div>
           <div>
             <span class="label">Last Beam Lock</span>
@@ -128,16 +136,23 @@
         </div>
         <label>
           <span class="label">Scan Speed</span>
-          <input id="scan-speed" type="range" min="1" max="10" step="1" value="6" />
+          <input id="scan-speed" type="range" min="1" max="20" step="1" value="6" />
+        </label>
+        <label>
+          <span class="label">Scan Width (deg, full square, blank = stage default)</span>
+          <input id="scan-width" type="number" min="0.1" max="30" step="0.1" placeholder="Stage default" />
         </label>
         <div class="button-row">
           <button type="button" id="start-coarse-scan">Start Coarse Scan</button>
           <button type="button" id="beam-seen">I See The Beam</button>
           <button type="button" id="start-fine-scan">Start Fine Scan</button>
+          <button type="button" id="start-micro-scan">Start Micro Scan</button>
           <button type="button" id="stop-scan">Stop Scan</button>
-          <button type="button" id="use-scan-lock">Use Beam Lock</button>
+          <button type="button" id="resume-backward-scan">Resume Backward</button>
+          <button type="button" id="resume-forward-scan">Resume Forward</button>
+          <button type="button" id="use-scan-lock">Go To Beam Lock</button>
         </div>
-        <p class="note">Use the approximate pan/tilt above as the scan center. When the beam reaches you, press “I See The Beam”, then start the fine scan.</p>
+        <p class="note">Stop Scan now acts like a pause. You can resume in forward or backward direction from the current area, then refine with fine and micro scans around the saved lock.</p>
       </section>
 
       <section class="state-card">

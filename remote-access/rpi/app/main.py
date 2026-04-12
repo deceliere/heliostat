@@ -33,7 +33,9 @@ runtime_state = {
     "pan_us": None,
     "tilt_us": None,
     "scan_active": False,
+    "scan_paused": False,
     "scan_stage": "idle",
+    "scan_direction": "forward",
     "scan_center_pan_deg": None,
     "scan_center_tilt_deg": None,
     "scan_range_pan_deg": None,
@@ -116,7 +118,9 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           pan_us=data.get("pan_us"),
           tilt_us=data.get("tilt_us"),
           scan_active=bool(data.get("scan_active", False)),
+          scan_paused=bool(data.get("scan_paused", False)),
           scan_stage=data.get("scan_stage", "idle"),
+          scan_direction=data.get("scan_direction", "forward"),
           scan_center_pan_deg=data.get("scan_center_pan_deg"),
           scan_center_tilt_deg=data.get("scan_center_tilt_deg"),
           scan_range_pan_deg=data.get("scan_range_pan_deg"),
@@ -244,7 +248,7 @@ def api_cmd_time(payload: dict) -> dict:
 @app.post("/api/cmd/scan/start")
 def api_cmd_scan_start(payload: dict) -> dict:
     stage = payload.get("stage")
-    if stage not in {"coarse", "fine"}:
+    if stage not in {"coarse", "fine", "micro"}:
         raise HTTPException(status_code=400, detail="invalid stage")
 
     command = {
@@ -252,7 +256,12 @@ def api_cmd_scan_start(payload: dict) -> dict:
         "center_pan_deg": float(payload.get("center_pan_deg")),
         "center_tilt_deg": float(payload.get("center_tilt_deg")),
         "dwell_ms": int(payload.get("dwell_ms", 0)),
+        "direction": payload.get("direction", "forward"),
     }
+    if payload.get("range_pan_deg") is not None:
+        command["range_pan_deg"] = float(payload.get("range_pan_deg"))
+    if payload.get("range_tilt_deg") is not None:
+        command["range_tilt_deg"] = float(payload.get("range_tilt_deg"))
     mqtt_client.publish(topic("cmd/scan"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 
@@ -260,6 +269,16 @@ def api_cmd_scan_start(payload: dict) -> dict:
 @app.post("/api/cmd/scan/stop")
 def api_cmd_scan_stop() -> dict:
     command = {"stage": "off"}
+    mqtt_client.publish(topic("cmd/scan"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/scan/resume")
+def api_cmd_scan_resume(payload: dict) -> dict:
+    direction = payload.get("direction", "forward")
+    if direction not in {"forward", "backward"}:
+        raise HTTPException(status_code=400, detail="invalid direction")
+    command = {"stage": "resume", "direction": direction}
     mqtt_client.publish(topic("cmd/scan"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 

@@ -89,12 +89,16 @@ constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 1024;
 constexpr float SCAN_SETTLE_TOLERANCE_DEG = 0.35f;
 constexpr uint32_t SCAN_COARSE_DWELL_MS = 450;
 constexpr uint32_t SCAN_FINE_DWELL_MS = 500;
+constexpr uint32_t SCAN_MICRO_DWELL_MS = 550;
 constexpr float SCAN_COARSE_RANGE_PAN_DEG = 6.0f;
 constexpr float SCAN_COARSE_RANGE_TILT_DEG = 6.0f;
 constexpr float SCAN_COARSE_STEP_DEG = 1.0f;
 constexpr float SCAN_FINE_RANGE_PAN_DEG = 1.5f;
 constexpr float SCAN_FINE_RANGE_TILT_DEG = 1.5f;
 constexpr float SCAN_FINE_STEP_DEG = 0.25f;
+constexpr float SCAN_MICRO_RANGE_PAN_DEG = 0.5f;
+constexpr float SCAN_MICRO_RANGE_TILT_DEG = 0.5f;
+constexpr float SCAN_MICRO_STEP_DEG = 0.1f;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif
@@ -147,6 +151,7 @@ enum ScanStage : uint8_t {
   SCAN_STAGE_IDLE = 0,
   SCAN_STAGE_COARSE = 1,
   SCAN_STAGE_FINE = 2,
+  SCAN_STAGE_MICRO = 3,
 };
 
 const char* controlModeName(ControlMode mode) {
@@ -170,6 +175,8 @@ const char* scanStageName(ScanStage stage) {
       return "coarse";
     case SCAN_STAGE_FINE:
       return "fine";
+    case SCAN_STAGE_MICRO:
+      return "micro";
     default:
       return "unknown";
   }
@@ -268,7 +275,9 @@ uint32_t lastNtpApplyMs = 0;
 bool ntpConfigured = false;
 bool ntpTimeValid = false;
 bool scanActive = false;
+bool scanPaused = false;
 ScanStage scanStage = SCAN_STAGE_IDLE;
+int8_t scanDirection = 1;
 float scanCenterPanDeg = PAN_START_DEG;
 float scanCenterTiltDeg = TILT_START_DEG;
 float scanRangePanDeg = 0.0f;
@@ -784,7 +793,9 @@ void publishRemoteState(bool force = false) {
   doc["pan_us"] = lastPanPulseUs;
   doc["tilt_us"] = lastTiltPulseUs;
   doc["scan_active"] = scanActive;
+  doc["scan_paused"] = scanPaused;
   doc["scan_stage"] = scanStageName(scanStage);
+  doc["scan_direction"] = (scanDirection >= 0) ? "forward" : "backward";
   doc["scan_center_pan_deg"] = scanCenterPanDeg;
   doc["scan_center_tilt_deg"] = scanCenterTiltDeg;
   doc["scan_range_pan_deg"] = scanRangePanDeg;
@@ -820,7 +831,37 @@ void publishRemoteState(bool force = false) {
 void stopScan() {
   scanActive = false;
   scanStage = SCAN_STAGE_IDLE;
+  scanPaused = false;
+  scanDirection = 1;
   scanPointReachedMs = 0;
+}
+
+void pauseScan() {
+  scanActive = false;
+  scanPaused = true;
+  scanPointReachedMs = 0;
+}
+
+uint16_t scanIndexFromGrid(uint16_t row, uint16_t col) {
+  if (scanGridCols == 0 || scanGridRows == 0) {
+    return 0;
+  }
+  if ((row % 2u) == 1u) {
+    col = static_cast<uint16_t>((scanGridCols - 1u) - col);
+  }
+  return static_cast<uint16_t>((row * scanGridCols) + col);
+}
+
+uint16_t nearestScanIndexFromCurrentPosition() {
+  if (scanGridCols == 0 || scanGridRows == 0 || scanStepDeg <= 0.0f) {
+    return 0;
+  }
+
+  const float colFloat = (panAngleDeg - (scanCenterPanDeg - scanRangePanDeg)) / scanStepDeg;
+  const float rowFloat = ((scanCenterTiltDeg + scanRangeTiltDeg) - tiltAngleDeg) / scanStepDeg;
+  const uint16_t col = static_cast<uint16_t>(constrain(lroundf(colFloat), 0L, static_cast<long>(scanGridCols - 1u)));
+  const uint16_t row = static_cast<uint16_t>(constrain(lroundf(rowFloat), 0L, static_cast<long>(scanGridRows - 1u)));
+  return scanIndexFromGrid(row, col);
 }
 
 void setScanTargetForIndex(uint16_t index) {
@@ -840,7 +881,13 @@ void setScanTargetForIndex(uint16_t index) {
   tiltTargetDeg = constrain(tilt, TILT_MIN_DEG, TILT_MAX_DEG);
 }
 
-void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg, uint32_t dwellMsOverride) {
+void startScan(ScanStage stage,
+               float centerPanDeg,
+               float centerTiltDeg,
+               uint32_t dwellMsOverride,
+               float rangePanOverrideDeg = -1.0f,
+               float rangeTiltOverrideDeg = -1.0f,
+               int8_t direction = 1) {
   autoTrackEnabled = false;
   controlMode = CONTROL_MODE_MANUAL;
   remotePanInput = 0.0f;
@@ -849,6 +896,8 @@ void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg, uint32_
 
   scanStage = stage;
   scanActive = true;
+  scanPaused = false;
+  scanDirection = (direction < 0) ? -1 : 1;
   scanCenterPanDeg = constrain(centerPanDeg, PAN_MIN_DEG, PAN_MAX_DEG);
   scanCenterTiltDeg = constrain(centerTiltDeg, TILT_MIN_DEG, TILT_MAX_DEG);
   if (stage == SCAN_STAGE_COARSE) {
@@ -856,15 +905,26 @@ void startScan(ScanStage stage, float centerPanDeg, float centerTiltDeg, uint32_
     scanRangeTiltDeg = SCAN_COARSE_RANGE_TILT_DEG;
     scanStepDeg = SCAN_COARSE_STEP_DEG;
     scanDwellMs = SCAN_COARSE_DWELL_MS;
-  } else {
+  } else if (stage == SCAN_STAGE_FINE) {
     scanRangePanDeg = SCAN_FINE_RANGE_PAN_DEG;
     scanRangeTiltDeg = SCAN_FINE_RANGE_TILT_DEG;
     scanStepDeg = SCAN_FINE_STEP_DEG;
     scanDwellMs = SCAN_FINE_DWELL_MS;
+  } else {
+    scanRangePanDeg = SCAN_MICRO_RANGE_PAN_DEG;
+    scanRangeTiltDeg = SCAN_MICRO_RANGE_TILT_DEG;
+    scanStepDeg = SCAN_MICRO_STEP_DEG;
+    scanDwellMs = SCAN_MICRO_DWELL_MS;
   }
 
   if (dwellMsOverride > 0) {
     scanDwellMs = dwellMsOverride;
+  }
+  if (rangePanOverrideDeg > 0.0f) {
+    scanRangePanDeg = rangePanOverrideDeg;
+  }
+  if (rangeTiltOverrideDeg > 0.0f) {
+    scanRangeTiltDeg = rangeTiltOverrideDeg;
   }
 
   scanGridCols = static_cast<uint16_t>(lroundf((scanRangePanDeg * 2.0f) / scanStepDeg)) + 1u;
@@ -880,7 +940,20 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   if (strcmp(stage, "off") == 0) {
     panTargetDeg = panAngleDeg;
     tiltTargetDeg = tiltAngleDeg;
-    stopScan();
+    pauseScan();
+    return;
+  }
+
+  if (strcmp(stage, "resume") == 0) {
+    if (scanStage != SCAN_STAGE_IDLE && scanPointsTotal > 0) {
+      const char* directionString = doc["direction"] | "forward";
+      scanDirection = (strcmp(directionString, "backward") == 0) ? -1 : 1;
+      scanPointIndex = nearestScanIndexFromCurrentPosition();
+      scanActive = true;
+      scanPaused = false;
+      scanPointReachedMs = 0;
+      setScanTargetForIndex(scanPointIndex);
+    }
     return;
   }
 
@@ -889,11 +962,17 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   const float centerPan = doc["center_pan_deg"] | defaultCenterPan;
   const float centerTilt = doc["center_tilt_deg"] | defaultCenterTilt;
   const uint32_t dwellMs = doc["dwell_ms"] | 0;
+  const char* directionString = doc["direction"] | "forward";
+  const int8_t direction = (strcmp(directionString, "backward") == 0) ? -1 : 1;
+  const float rangePanDeg = doc["range_pan_deg"] | -1.0f;
+  const float rangeTiltDeg = doc["range_tilt_deg"] | -1.0f;
 
   if (strcmp(stage, "coarse") == 0) {
-    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt, dwellMs);
+    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt, dwellMs, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "fine") == 0) {
-    startScan(SCAN_STAGE_FINE, centerPan, centerTilt, dwellMs);
+    startScan(SCAN_STAGE_FINE, centerPan, centerTilt, dwellMs, rangePanDeg, rangeTiltDeg, direction);
+  } else if (strcmp(stage, "micro") == 0) {
+    startScan(SCAN_STAGE_MICRO, centerPan, centerTilt, dwellMs, rangePanDeg, rangeTiltDeg, direction);
   }
 }
 
@@ -1267,13 +1346,14 @@ void updateScanState(uint32_t nowMs) {
     return;
   }
 
-  ++scanPointIndex;
-  if (scanPointIndex >= scanPointsTotal) {
+  const int32_t nextIndex = static_cast<int32_t>(scanPointIndex) + static_cast<int32_t>(scanDirection);
+  if (nextIndex < 0 || nextIndex >= static_cast<int32_t>(scanPointsTotal)) {
     stopScan();
     publishRemoteDiag("scan_completed");
     return;
   }
 
+  scanPointIndex = static_cast<uint16_t>(nextIndex);
   scanPointReachedMs = 0;
   setScanTargetForIndex(scanPointIndex);
 }

@@ -37,8 +37,17 @@ let latestState = {};
 let scanSpeedSlider = null;
 
 function scanSpeedToDwellMs(speedValue) {
-  const speed = Math.max(1, Math.min(10, Number(speedValue) || 6));
-  return Math.round(980 - (speed * 80));
+  const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
+  return Math.round(1040 - (speed * 42));
+}
+
+function readScanRangeOverrideDeg() {
+  const input = document.getElementById("scan-width");
+  const widthDeg = Number(input?.value ?? "");
+  if (!Number.isFinite(widthDeg) || widthDeg <= 0.0) {
+    return null;
+  }
+  return widthDeg / 2.0;
 }
 
 function suppressNativeTouchBehavior(element) {
@@ -223,7 +232,10 @@ function bindControlButtons() {
   const startCoarseScanButton = document.getElementById("start-coarse-scan");
   const beamSeenButton = document.getElementById("beam-seen");
   const startFineScanButton = document.getElementById("start-fine-scan");
+  const startMicroScanButton = document.getElementById("start-micro-scan");
   const stopScanButton = document.getElementById("stop-scan");
+  const resumeBackwardScanButton = document.getElementById("resume-backward-scan");
+  const resumeForwardScanButton = document.getElementById("resume-forward-scan");
   const useScanLockButton = document.getElementById("use-scan-lock");
   scanSpeedSlider = document.getElementById("scan-speed");
   const scanSpeedValue = document.getElementById("scan-speed-value");
@@ -237,6 +249,22 @@ function bindControlButtons() {
 
   scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
   refreshScanSpeedLabel();
+
+  const buildScanCommand = (stage, panCenter, tiltCenter) => {
+    const command = {
+      stage,
+      center_pan_deg: panCenter,
+      center_tilt_deg: tiltCenter,
+      dwell_ms: scanSpeedToDwellMs(scanSpeedSlider?.value),
+      direction: "forward",
+    };
+    const rangeOverrideDeg = readScanRangeOverrideDeg();
+    if (rangeOverrideDeg !== null) {
+      command.range_pan_deg = rangeOverrideDeg;
+      command.range_tilt_deg = rangeOverrideDeg;
+    }
+    return command;
+  };
 
   manualButton?.addEventListener("click", async () => {
     await stopJogging();
@@ -294,12 +322,7 @@ function bindControlButtons() {
 
   startCoarseScanButton?.addEventListener("click", async () => {
     const targets = readAbsoluteTargets();
-    await postJson("/api/cmd/scan/start", {
-      stage: "coarse",
-      center_pan_deg: targets.pan_deg,
-      center_tilt_deg: targets.tilt_deg,
-      dwell_ms: scanSpeedToDwellMs(scanSpeedSlider?.value),
-    });
+    await postJson("/api/cmd/scan/start", buildScanCommand("coarse", targets.pan_deg, targets.tilt_deg));
     await refreshUi();
   });
 
@@ -313,12 +336,16 @@ function bindControlButtons() {
       typeof latestState.scan_lock_pan_deg === "number" ? latestState.scan_lock_pan_deg : readAbsoluteTargets().pan_deg;
     const tiltCenter =
       typeof latestState.scan_lock_tilt_deg === "number" ? latestState.scan_lock_tilt_deg : readAbsoluteTargets().tilt_deg;
-    await postJson("/api/cmd/scan/start", {
-      stage: "fine",
-      center_pan_deg: panCenter,
-      center_tilt_deg: tiltCenter,
-      dwell_ms: scanSpeedToDwellMs(scanSpeedSlider?.value),
-    });
+    await postJson("/api/cmd/scan/start", buildScanCommand("fine", panCenter, tiltCenter));
+    await refreshUi();
+  });
+
+  startMicroScanButton?.addEventListener("click", async () => {
+    const panCenter =
+      typeof latestState.scan_lock_pan_deg === "number" ? latestState.scan_lock_pan_deg : readAbsoluteTargets().pan_deg;
+    const tiltCenter =
+      typeof latestState.scan_lock_tilt_deg === "number" ? latestState.scan_lock_tilt_deg : readAbsoluteTargets().tilt_deg;
+    await postJson("/api/cmd/scan/start", buildScanCommand("micro", panCenter, tiltCenter));
     await refreshUi();
   });
 
@@ -327,15 +354,36 @@ function bindControlButtons() {
     await refreshUi();
   });
 
+  resumeBackwardScanButton?.addEventListener("click", async () => {
+    await postJson("/api/cmd/scan/resume", { direction: "backward" });
+    await refreshUi();
+  });
+
+  resumeForwardScanButton?.addEventListener("click", async () => {
+    await postJson("/api/cmd/scan/resume", { direction: "forward" });
+    await refreshUi();
+  });
+
   useScanLockButton?.addEventListener("click", async () => {
     const panInput = document.getElementById("pan-absolute");
     const tiltInput = document.getElementById("tilt-absolute");
-    if (panInput && typeof latestState.scan_lock_pan_deg === "number") {
+    const hasLock =
+      typeof latestState.scan_lock_pan_deg === "number" &&
+      typeof latestState.scan_lock_tilt_deg === "number";
+    if (!hasLock) {
+      return;
+    }
+    if (panInput) {
       panInput.value = String(latestState.scan_lock_pan_deg);
     }
-    if (tiltInput && typeof latestState.scan_lock_tilt_deg === "number") {
+    if (tiltInput) {
       tiltInput.value = String(latestState.scan_lock_tilt_deg);
     }
+    await postJson("/api/cmd/move-to", {
+      pan_deg: latestState.scan_lock_pan_deg,
+      tilt_deg: latestState.scan_lock_tilt_deg,
+    });
+    await refreshUi();
   });
 }
 
@@ -372,17 +420,34 @@ async function refreshUi() {
     setStatusPill("state-updated", formatUnixMs(state.last_state_update_unix_ms), state.last_state_update_unix_ms ? "slate" : "amber");
 
     const scanStage = state.scan_stage ?? "idle";
+    const scanPaused = !!state.scan_paused;
     if (state.scan_active) {
       setStatusPill("scan-stage", scanStage, "green", true);
+    } else if (scanPaused && scanStage !== "idle") {
+      setStatusPill("scan-stage", `${scanStage} paused`, "amber");
     } else if (scanStage !== "idle") {
       setStatusPill("scan-stage", scanStage, "amber");
     } else {
       setStatusPill("scan-stage", "Idle", "slate");
     }
 
+    const scanDirection = state.scan_direction ?? "forward";
+    setStatusPill("scan-direction", scanDirection, scanDirection === "backward" ? "rose" : "slate");
+
     const scanPointIndex = Number(state.scan_point_index ?? 0);
     const scanPointsTotal = Number(state.scan_points_total ?? 0);
     setStatusPill("scan-progress", `${scanPointIndex} / ${scanPointsTotal}`, scanPointsTotal > 0 ? "slate" : "amber");
+
+    if (typeof state.scan_range_pan_deg === "number" && typeof state.scan_range_tilt_deg === "number" &&
+        state.scan_range_pan_deg > 0 && state.scan_range_tilt_deg > 0) {
+      setStatusPill(
+        "scan-width-current",
+        `${(state.scan_range_pan_deg * 2).toFixed(2)} x ${(state.scan_range_tilt_deg * 2).toFixed(2)}`,
+        "slate"
+      );
+    } else {
+      setStatusPill("scan-width-current", "Default", "amber");
+    }
 
     if (state.scan_lock_valid && typeof state.scan_lock_pan_deg === "number" && typeof state.scan_lock_tilt_deg === "number") {
       setStatusPill("scan-lock", `${state.scan_lock_pan_deg.toFixed(2)} / ${state.scan_lock_tilt_deg.toFixed(2)}`, "green");
