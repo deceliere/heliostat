@@ -34,7 +34,6 @@ let selectedStepDeg = 0.1;
 let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
-let lastGlobalTouchEndMs = 0;
 
 function suppressNativeTouchBehavior(element) {
   if (!element) {
@@ -318,24 +317,5 @@ document.addEventListener("selectstart", (event) => {
     event.preventDefault();
   }
 });
-document.addEventListener("dblclick", (event) => {
-  event.preventDefault();
-}, { passive: false });
-document.addEventListener("gesturestart", (event) => {
-  event.preventDefault();
-}, { passive: false });
-document.addEventListener("gesturechange", (event) => {
-  event.preventDefault();
-}, { passive: false });
-document.addEventListener("gestureend", (event) => {
-  event.preventDefault();
-}, { passive: false });
-document.addEventListener("touchend", (event) => {
-  const now = Date.now();
-  if ((now - lastGlobalTouchEndMs) < 350) {
-    event.preventDefault();
-  }
-  lastGlobalTouchEndMs = now;
-}, { passive: false });
 refreshUi();
 setInterval(refreshUi, 250);
