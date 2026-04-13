@@ -505,8 +505,8 @@ Vec3 vectorFromBearingElevation(float bearingDeg, float elevationDeg) {
   const float elevationRad = degToRad(elevationDeg);
   const float cosElevation = cosf(elevationRad);
   return normalizeVec3({
-      cosElevation * sinf(bearingRad),
       cosElevation * cosf(bearingRad),
+      cosElevation * sinf(bearingRad),
       sinf(elevationRad),
   });
 }
