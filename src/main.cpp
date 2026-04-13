@@ -87,9 +87,9 @@ constexpr uint32_t REMOTE_NTP_RESYNC_MS = 60000;
 constexpr time_t MIN_VALID_UNIX_TIME_UTC = 1704067200;
 constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 1024;
 constexpr float SCAN_SETTLE_TOLERANCE_DEG = 0.35f;
-constexpr uint32_t SCAN_COARSE_DWELL_MS = 450;
-constexpr uint32_t SCAN_FINE_DWELL_MS = 500;
-constexpr uint32_t SCAN_MICRO_DWELL_MS = 550;
+constexpr uint32_t SCAN_COARSE_DWELL_MS = 180;
+constexpr uint32_t SCAN_FINE_DWELL_MS = 220;
+constexpr uint32_t SCAN_MICRO_DWELL_MS = 260;
 constexpr float SCAN_COARSE_RANGE_PAN_DEG = 6.0f;
 constexpr float SCAN_COARSE_RANGE_TILT_DEG = 6.0f;
 constexpr float SCAN_COARSE_STEP_DEG = 1.0f;
@@ -99,7 +99,7 @@ constexpr float SCAN_FINE_STEP_DEG = 0.25f;
 constexpr float SCAN_MICRO_RANGE_PAN_DEG = 0.5f;
 constexpr float SCAN_MICRO_RANGE_TILT_DEG = 0.5f;
 constexpr float SCAN_MICRO_STEP_DEG = 0.1f;
-constexpr float SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC = 800.0f;
+constexpr float SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC = 120.0f;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif

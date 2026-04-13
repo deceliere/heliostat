@@ -39,12 +39,12 @@ let scanDwellSlider = null;
 
 function scanSpeedToDwellMs(speedValue) {
   const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
-  return Math.round(1040 - (speed * 42));
+  return Math.round(400 - ((speed - 1) * ((400 - 40) / 19)));
 }
 
 function scanSliderToMoveSpeedDegPerSec(speedValue) {
   const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
-  return Math.round(100 + ((speed - 1) * ((2200 - 100) / 19)));
+  return Math.round(10 + ((speed - 1) * ((300 - 10) / 19)));
 }
 
 function readScanRangeOverrideDeg() {
@@ -539,11 +539,15 @@ async function refreshUi() {
     }
 
     if (typeof state.scan_move_speed_deg_per_sec === "number" && state.scan_move_speed_deg_per_sec > 0) {
-      setStatusPill("scan-speed-value", `${state.scan_move_speed_deg_per_sec.toFixed(0)}°/s`, "slate");
+      setStatusPill("scan-speed-active", `${state.scan_move_speed_deg_per_sec.toFixed(0)}°/s`, "slate");
+    } else {
+      setStatusPill("scan-speed-active", "Unknown", "amber");
     }
 
     if (typeof state.scan_dwell_ms === "number" && state.scan_dwell_ms > 0) {
-      setStatusPill("scan-dwell-value", `${state.scan_dwell_ms} ms`, "slate");
+      setStatusPill("scan-dwell-active", `${state.scan_dwell_ms} ms`, "slate");
+    } else {
+      setStatusPill("scan-dwell-active", "Unknown", "amber");
     }
 
     setText("state-output", JSON.stringify(state, null, 2));
