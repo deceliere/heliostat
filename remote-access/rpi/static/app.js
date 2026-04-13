@@ -108,6 +108,13 @@ function readAbsoluteTargets() {
   };
 }
 
+function readApproxTargetDirection() {
+  return {
+    bearing_deg: Number(document.getElementById("approx-bearing")?.value ?? 180),
+    elevation_deg: Number(document.getElementById("approx-elevation")?.value ?? 0),
+  };
+}
+
 async function sendJog(axis, direction, multiplier = 1.0) {
   await postJson("/api/cmd/mode", { mode: "manual" });
   await postJson("/api/cmd/jog", {
@@ -234,6 +241,8 @@ function bindControlButtons() {
   const recenterButton = document.getElementById("recenter");
   const moveToButton = document.getElementById("move-to");
   const loadCurrentButton = document.getElementById("load-current");
+  const moveApproxTargetButton = document.getElementById("move-approx-target");
+  const loadApproxTargetButton = document.getElementById("load-approx-target");
   const syncTimeButton = document.getElementById("sync-time");
   const startCoarseScanButton = document.getElementById("start-coarse-scan");
   const beamSeenButton = document.getElementById("beam-seen");
@@ -324,6 +333,23 @@ function bindControlButtons() {
     }
     if (tiltInput && typeof latestState.tilt_deg === "number") {
       tiltInput.value = String(latestState.tilt_deg);
+    }
+  });
+
+  moveApproxTargetButton?.addEventListener("click", async () => {
+    await stopJogging();
+    await postJson("/api/cmd/approx-target", readApproxTargetDirection());
+    await refreshUi();
+  });
+
+  loadApproxTargetButton?.addEventListener("click", () => {
+    const panInput = document.getElementById("pan-absolute");
+    const tiltInput = document.getElementById("tilt-absolute");
+    if (panInput && typeof latestState.approx_target_pan_deg === "number") {
+      panInput.value = String(latestState.approx_target_pan_deg);
+    }
+    if (tiltInput && typeof latestState.approx_target_tilt_deg === "number") {
+      tiltInput.value = String(latestState.approx_target_tilt_deg);
     }
   });
 
@@ -474,6 +500,12 @@ async function refreshUi() {
       setStatusPill("scan-current", `${state.pan_deg.toFixed(2)} / ${state.tilt_deg.toFixed(2)}`, "slate");
     } else {
       setStatusPill("scan-current", "Unknown", "amber");
+    }
+
+    if (state.approx_target_valid && typeof state.approx_target_pan_deg === "number" && typeof state.approx_target_tilt_deg === "number") {
+      setStatusPill("approx-position", `${state.approx_target_pan_deg.toFixed(2)} / ${state.approx_target_tilt_deg.toFixed(2)}`, "green");
+    } else {
+      setStatusPill("approx-position", "Unknown", "amber");
     }
 
     if (typeof state.scan_move_speed_deg_per_sec === "number" && state.scan_move_speed_deg_per_sec > 0) {

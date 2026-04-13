@@ -48,6 +48,11 @@ runtime_state = {
     "scan_lock_valid": False,
     "scan_lock_pan_deg": None,
     "scan_lock_tilt_deg": None,
+    "approx_target_valid": False,
+    "approx_target_bearing_deg": None,
+    "approx_target_elevation_deg": None,
+    "approx_target_pan_deg": None,
+    "approx_target_tilt_deg": None,
     "remote_utc": None,
     "sun_time_ok": False,
     "target_ok": False,
@@ -134,6 +139,11 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           scan_lock_valid=bool(data.get("scan_lock_valid", False)),
           scan_lock_pan_deg=data.get("scan_lock_pan_deg"),
           scan_lock_tilt_deg=data.get("scan_lock_tilt_deg"),
+          approx_target_valid=bool(data.get("approx_target_valid", False)),
+          approx_target_bearing_deg=data.get("approx_target_bearing_deg"),
+          approx_target_elevation_deg=data.get("approx_target_elevation_deg"),
+          approx_target_pan_deg=data.get("approx_target_pan_deg"),
+          approx_target_tilt_deg=data.get("approx_target_tilt_deg"),
           remote_utc=data.get("remote_utc"),
           sun_time_ok=bool(data.get("sun_time_ok", False)),
           target_ok=bool(data.get("target_ok", False)),
@@ -244,6 +254,16 @@ def api_cmd_time(payload: dict) -> dict:
         "time_scale": float(payload.get("time_scale", 1.0)),
     }
     mqtt_client.publish(topic("cmd/time"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/approx-target")
+def api_cmd_approx_target(payload: dict) -> dict:
+    command = {
+        "bearing_deg": float(payload.get("bearing_deg")),
+        "elevation_deg": float(payload.get("elevation_deg")),
+    }
+    mqtt_client.publish(topic("cmd/approx_target"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 
 

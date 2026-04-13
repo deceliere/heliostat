@@ -103,6 +103,25 @@
       </section>
 
       <section class="control-card">
+        <h2>Approximate Beam Direction</h2>
+        <div class="manual-grid">
+          <label>
+            <span class="label">Bearing Target</span>
+            <input id="approx-bearing" type="number" min="0" max="360" step="0.1" value="180" />
+          </label>
+          <label>
+            <span class="label">Elevation Target</span>
+            <input id="approx-elevation" type="number" min="-10" max="90" step="0.1" value="0" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="move-approx-target">Move To Approx Direction</button>
+          <button type="button" id="load-approx-target">Use Approx Position</button>
+        </div>
+        <p class="note">This computes an approximate mirror orientation from the current sun position, then you can start a scan from that area.</p>
+      </section>
+
+      <section class="control-card">
         <h2>Beam Scan</h2>
         <div class="status-grid scan-status-grid">
           <div>
@@ -128,6 +147,10 @@
           <div>
             <span class="label">Current Position</span>
             <span id="scan-current" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Approx Position</span>
+            <span id="approx-position" class="status-pill">Unknown</span>
           </div>
           <div>
             <span class="label">Move Speed</span>

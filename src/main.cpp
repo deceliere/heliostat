@@ -294,6 +294,11 @@ uint32_t scanPointReachedMs = 0;
 bool scanLockValid = false;
 float scanLockPanDeg = PAN_START_DEG;
 float scanLockTiltDeg = TILT_START_DEG;
+bool approxTargetValid = false;
+float approxTargetBearingDeg = 180.0f;
+float approxTargetElevationDeg = 0.0f;
+float approxTargetPanDeg = PAN_START_DEG;
+float approxTargetTiltDeg = TILT_START_DEG;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
@@ -492,6 +497,17 @@ Vec3 sunVectorFromUnixTime(time_t unixTimeUtc) {
       cosf(elevationRadF) * cosf(azimuthRadF),
       cosf(elevationRadF) * sinf(azimuthRadF),
       sinf(elevationRadF),
+  });
+}
+
+Vec3 vectorFromBearingElevation(float bearingDeg, float elevationDeg) {
+  const float bearingRad = degToRad(bearingDeg);
+  const float elevationRad = degToRad(elevationDeg);
+  const float cosElevation = cosf(elevationRad);
+  return normalizeVec3({
+      cosElevation * sinf(bearingRad),
+      cosElevation * cosf(bearingRad),
+      sinf(elevationRad),
   });
 }
 
@@ -810,6 +826,11 @@ void publishRemoteState(bool force = false) {
   doc["scan_lock_valid"] = scanLockValid;
   doc["scan_lock_pan_deg"] = scanLockPanDeg;
   doc["scan_lock_tilt_deg"] = scanLockTiltDeg;
+  doc["approx_target_valid"] = approxTargetValid;
+  doc["approx_target_bearing_deg"] = approxTargetBearingDeg;
+  doc["approx_target_elevation_deg"] = approxTargetElevationDeg;
+  doc["approx_target_pan_deg"] = approxTargetPanDeg;
+  doc["approx_target_tilt_deg"] = approxTargetTiltDeg;
   doc["sun_time_ok"] = sunTimeValid;
   doc["target_ok"] = targetDirectionValid;
   doc["auto_enabled"] = autoTrackEnabled;
@@ -1046,6 +1067,46 @@ void handleRemoteMoveToCommand(const JsonDocument& doc) {
   tiltTargetDeg = constrain(doc["tilt_deg"] | tiltTargetDeg, TILT_MIN_DEG, TILT_MAX_DEG);
 }
 
+void handleRemoteApproxTargetCommand(const JsonDocument& doc) {
+  time_t unixTimeUtc = 0;
+  if (!currentUnixTimeUtc(unixTimeUtc)) {
+    approxTargetValid = false;
+    publishRemoteDiag("approx_target_missing_time");
+    return;
+  }
+
+  const float bearingDeg = fmodf((doc["bearing_deg"] | 180.0f) + 360.0f, 360.0f);
+  const float elevationDeg = constrain(doc["elevation_deg"] | 0.0f, -10.0f, 90.0f);
+  const Vec3 sunDirection = sunVectorFromUnixTime(unixTimeUtc);
+  const Vec3 targetDirectionApprox = vectorFromBearingElevation(bearingDeg, elevationDeg);
+  Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirectionApprox));
+  if (lengthVec3(desiredNormal) <= 0.0f) {
+    approxTargetValid = false;
+    publishRemoteDiag("approx_target_invalid");
+    return;
+  }
+
+  const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+  if (dotVec3(currentNormal, desiredNormal) < 0.0f) {
+    desiredNormal = scaleVec3(desiredNormal, -1.0f);
+  }
+
+  stopScan();
+  autoTrackEnabled = false;
+  controlMode = CONTROL_MODE_MANUAL;
+  remotePanInput = 0.0f;
+  remoteTiltInput = 0.0f;
+  precisionManualMode = false;
+
+  panTiltFromMirrorNormal(desiredNormal, approxTargetPanDeg, approxTargetTiltDeg);
+  approxTargetBearingDeg = bearingDeg;
+  approxTargetElevationDeg = elevationDeg;
+  approxTargetValid = true;
+  panTargetDeg = approxTargetPanDeg;
+  tiltTargetDeg = approxTargetTiltDeg;
+  publishRemoteDiag("approx_target_applied");
+}
+
 void handleRemoteActionCommand(const JsonDocument& doc) {
   const char* action = doc["action"] | "";
   if (strcmp(action, "capture_target") == 0) {
@@ -1104,6 +1165,8 @@ void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length
     handleRemoteJogCommand(doc);
   } else if (topicString == mqttTopic("cmd/move_to")) {
     handleRemoteMoveToCommand(doc);
+  } else if (topicString == mqttTopic("cmd/approx_target")) {
+    handleRemoteApproxTargetCommand(doc);
   } else if (topicString == mqttTopic("cmd/scan")) {
     handleRemoteScanCommand(doc);
   } else if (topicString == mqttTopic("cmd/manual")) {
@@ -1200,6 +1263,7 @@ void ensureRemoteMqttConnected(uint32_t nowMs) {
   remoteMqttClient.subscribe(mqttTopic("cmd/mode").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/jog").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/move_to").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/approx_target").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/scan").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/manual").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/action").c_str());
