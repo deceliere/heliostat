@@ -115,6 +115,13 @@ function readApproxTargetDirection() {
   };
 }
 
+function readSiteLocation() {
+  return {
+    latitude_deg: Number(document.getElementById("site-latitude")?.value ?? 0),
+    longitude_deg: Number(document.getElementById("site-longitude")?.value ?? 0),
+  };
+}
+
 async function sendJog(axis, direction, multiplier = 1.0) {
   await postJson("/api/cmd/mode", { mode: "manual" });
   await postJson("/api/cmd/jog", {
@@ -241,6 +248,8 @@ function bindControlButtons() {
   const recenterButton = document.getElementById("recenter");
   const moveToButton = document.getElementById("move-to");
   const loadCurrentButton = document.getElementById("load-current");
+  const applySiteLocationButton = document.getElementById("apply-site-location");
+  const loadSiteLocationButton = document.getElementById("load-site-location");
   const moveApproxTargetButton = document.getElementById("move-approx-target");
   const loadApproxTargetButton = document.getElementById("load-approx-target");
   const syncTimeButton = document.getElementById("sync-time");
@@ -333,6 +342,22 @@ function bindControlButtons() {
     }
     if (tiltInput && typeof latestState.tilt_deg === "number") {
       tiltInput.value = String(latestState.tilt_deg);
+    }
+  });
+
+  applySiteLocationButton?.addEventListener("click", async () => {
+    await postJson("/api/cmd/location", readSiteLocation());
+    await refreshUi();
+  });
+
+  loadSiteLocationButton?.addEventListener("click", () => {
+    const latitudeInput = document.getElementById("site-latitude");
+    const longitudeInput = document.getElementById("site-longitude");
+    if (latitudeInput && typeof latestState.site_latitude_deg === "number") {
+      latitudeInput.value = String(latestState.site_latitude_deg);
+    }
+    if (longitudeInput && typeof latestState.site_longitude_deg === "number") {
+      longitudeInput.value = String(latestState.site_longitude_deg);
     }
   });
 
@@ -459,6 +484,11 @@ async function refreshUi() {
     }
 
     setStatusPill("state-updated", formatUnixMs(state.last_state_update_unix_ms), state.last_state_update_unix_ms ? "slate" : "amber");
+    if (typeof state.site_latitude_deg === "number" && typeof state.site_longitude_deg === "number") {
+      setStatusPill("site-gps", `${state.site_latitude_deg.toFixed(5)} / ${state.site_longitude_deg.toFixed(5)}`, "slate");
+    } else {
+      setStatusPill("site-gps", "Unknown", "amber");
+    }
 
     const scanStage = state.scan_stage ?? "idle";
     const scanPaused = !!state.scan_paused;

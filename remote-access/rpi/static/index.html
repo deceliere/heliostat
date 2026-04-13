@@ -47,6 +47,10 @@
             <span class="label">State Updated</span>
             <span id="state-updated" class="status-pill">Unknown</span>
           </div>
+          <div>
+            <span class="label">Site GPS</span>
+            <span id="site-gps" class="status-pill">Unknown</span>
+          </div>
         </div>
       </section>
 
@@ -100,6 +104,25 @@
           <button type="button" id="print-diag">Print Diag</button>
           <button type="button" id="sync-time">Sync Time</button>
         </div>
+      </section>
+
+      <section class="control-card">
+        <h2>Site Location</h2>
+        <div class="manual-grid">
+          <label>
+            <span class="label">Latitude</span>
+            <input id="site-latitude" type="number" min="-90" max="90" step="0.000001" value="46.200271" />
+          </label>
+          <label>
+            <span class="label">Longitude</span>
+            <input id="site-longitude" type="number" min="-180" max="180" step="0.000001" value="6.139432" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="apply-site-location">Apply Site Location</button>
+          <button type="button" id="load-site-location">Load Current Site</button>
+        </div>
+        <p class="note">This updates the solar calculation position on the remote. Altitude is still not used.</p>
       </section>
 
       <section class="control-card">

@@ -32,6 +32,8 @@ runtime_state = {
     "tilt_target_deg": None,
     "pan_us": None,
     "tilt_us": None,
+    "site_latitude_deg": None,
+    "site_longitude_deg": None,
     "scan_active": False,
     "scan_paused": False,
     "scan_stage": "idle",
@@ -123,6 +125,8 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           tilt_target_deg=data.get("tilt_target_deg"),
           pan_us=data.get("pan_us"),
           tilt_us=data.get("tilt_us"),
+          site_latitude_deg=data.get("site_latitude_deg"),
+          site_longitude_deg=data.get("site_longitude_deg"),
           scan_active=bool(data.get("scan_active", False)),
           scan_paused=bool(data.get("scan_paused", False)),
           scan_stage=data.get("scan_stage", "idle"),
@@ -254,6 +258,16 @@ def api_cmd_time(payload: dict) -> dict:
         "time_scale": float(payload.get("time_scale", 1.0)),
     }
     mqtt_client.publish(topic("cmd/time"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/location")
+def api_cmd_location(payload: dict) -> dict:
+    command = {
+        "latitude_deg": float(payload.get("latitude_deg")),
+        "longitude_deg": float(payload.get("longitude_deg")),
+    }
+    mqtt_client.publish(topic("cmd/location"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 
 

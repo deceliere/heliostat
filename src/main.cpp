@@ -263,6 +263,8 @@ uint32_t heliostatTimeBaseMillis = 0;
 float capturedPanAngleDeg = PAN_START_DEG;
 float capturedTiltAngleDeg = TILT_START_DEG;
 float heliostatTimeScale = HELIOSTAT_TIME_SCALE;
+float heliostatLatitudeDeg = HELIOSTAT_LATITUDE_DEG;
+float heliostatLongitudeDeg = HELIOSTAT_LONGITUDE_DEG;
 float lastAutoReferencePanDeg = PAN_START_DEG;
 float lastAutoReferenceTiltDeg = TILT_START_DEG;
 time_t autoTrackStartUnixTimeUtc = 0;
@@ -470,14 +472,14 @@ Vec3 sunVectorFromUnixTime(time_t unixTimeUtc) {
 
   const double fractionalDayUtc = fmod(static_cast<double>(unixTimeUtc), 86400.0) / 86400.0;
   const double trueSolarMinutes =
-      fmod((fractionalDayUtc * 1440.0) + equationOfTime + (4.0 * HELIOSTAT_LONGITUDE_DEG) + 1440.0,
+      fmod((fractionalDayUtc * 1440.0) + equationOfTime + (4.0 * heliostatLongitudeDeg) + 1440.0,
            1440.0);
   double hourAngleDeg = (trueSolarMinutes / 4.0) - 180.0;
   if (hourAngleDeg < -180.0) {
     hourAngleDeg += 360.0;
   }
 
-  const double latitudeRad = degToRad(HELIOSTAT_LATITUDE_DEG);
+  const double latitudeRad = degToRad(heliostatLatitudeDeg);
   const double declinationRad = degToRad(declination);
   const double hourAngleRad = degToRad(hourAngleDeg);
 
@@ -810,6 +812,8 @@ void publishRemoteState(bool force = false) {
   doc["tilt_target_deg"] = tiltTargetDeg;
   doc["pan_us"] = lastPanPulseUs;
   doc["tilt_us"] = lastTiltPulseUs;
+  doc["site_latitude_deg"] = heliostatLatitudeDeg;
+  doc["site_longitude_deg"] = heliostatLongitudeDeg;
   doc["scan_active"] = scanActive;
   doc["scan_paused"] = scanPaused;
   doc["scan_stage"] = scanStageName(scanStage);
@@ -1144,6 +1148,12 @@ void handleRemoteTimeCommand(const JsonDocument& doc) {
   heliostatTimeScale = max(timeScale, 0.01f);
 }
 
+void handleRemoteLocationCommand(const JsonDocument& doc) {
+  heliostatLatitudeDeg = constrain(doc["latitude_deg"] | heliostatLatitudeDeg, -90.0f, 90.0f);
+  heliostatLongitudeDeg = fmodf((doc["longitude_deg"] | heliostatLongitudeDeg) + 540.0f, 360.0f) - 180.0f;
+  publishRemoteDiag("location_updated");
+}
+
 void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length) {
   String payload;
   payload.reserve(length);
@@ -1175,6 +1185,8 @@ void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length
     handleRemoteActionCommand(doc);
   } else if (topicString == mqttTopic("cmd/time")) {
     handleRemoteTimeCommand(doc);
+  } else if (topicString == mqttTopic("cmd/location")) {
+    handleRemoteLocationCommand(doc);
   }
 
   markRemoteCommandReceived();
@@ -1268,6 +1280,7 @@ void ensureRemoteMqttConnected(uint32_t nowMs) {
   remoteMqttClient.subscribe(mqttTopic("cmd/manual").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/action").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/time").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/location").c_str());
   publishRemoteAvailability("online");
   publishRemoteState(true);
   publishRemoteDiag("mqtt_connected");
