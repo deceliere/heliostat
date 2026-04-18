@@ -73,6 +73,9 @@ constexpr int TILT_SERVO_MAX_PULSE_US = 2362;
 constexpr int SERVO_COMMAND_STEP_US = 1;
 constexpr bool SHOW_SERVO_PULSE_US_IN_LOGS = false;
 constexpr int SERVO_FREQUENCY_HZ = 350;
+constexpr uint8_t REMOTE_ACTUATOR_BACKEND_PWM = 0;
+constexpr uint8_t REMOTE_ACTUATOR_BACKEND_ST3020 = 1;
+constexpr uint8_t REMOTE_ACTUATOR_BACKEND = REMOTE_ACTUATOR_BACKEND_PWM;
 constexpr float SPEED_CURVE_EXPONENT = 1.8f;
 constexpr float HELIOSTAT_LATITUDE_DEG = 46.20027148248908f;
 constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
@@ -726,6 +729,75 @@ void setControllerHeliostatTimeScale(float scale) {
 int lastPanPulseUs = 0;
 int lastTiltPulseUs = 0;
 
+const char* remoteActuatorBackendName() {
+  switch (REMOTE_ACTUATOR_BACKEND) {
+    case REMOTE_ACTUATOR_BACKEND_PWM:
+      return "pwm";
+    case REMOTE_ACTUATOR_BACKEND_ST3020:
+      return "st3020";
+    default:
+      return "unknown";
+  }
+}
+
+int panAngleDegToLegacyPulseUs(float panDeg) {
+  return quantizePulseUs(
+      angleToPulseUs(panDeg, PAN_MIN_DEG, PAN_MAX_DEG,
+                     PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US),
+      PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US);
+}
+
+int tiltAngleDegToLegacyPulseUs(float tiltDeg) {
+  return quantizePulseUs(
+      angleToPulseUs(tiltModelDegToServoDeg(tiltDeg), TILT_SERVO_MIN_DEG, TILT_SERVO_MAX_DEG,
+                     TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US),
+      TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
+}
+
+void writeRemoteActuatorsPwm() {
+  lastPanPulseUs = panAngleDegToLegacyPulseUs(panAngleDeg);
+  lastTiltPulseUs = tiltAngleDegToLegacyPulseUs(tiltAngleDeg);
+  panServo.writeMicroseconds(lastPanPulseUs);
+  tiltServo.writeMicroseconds(lastTiltPulseUs);
+}
+
+void beginRemoteActuatorsPwm() {
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  panServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
+  tiltServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
+  panServo.attach(PAN_SERVO_PIN, PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US);
+  tiltServo.attach(TILT_SERVO_PIN, TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
+  writeRemoteActuatorsPwm();
+  delay(250);
+}
+
+void writeRemoteActuators() {
+  switch (REMOTE_ACTUATOR_BACKEND) {
+    case REMOTE_ACTUATOR_BACKEND_PWM:
+      writeRemoteActuatorsPwm();
+      return;
+    case REMOTE_ACTUATOR_BACKEND_ST3020:
+      // Placeholder for future ST3020 backend.
+      return;
+    default:
+      return;
+  }
+}
+
+void beginRemoteActuators() {
+  switch (REMOTE_ACTUATOR_BACKEND) {
+    case REMOTE_ACTUATOR_BACKEND_PWM:
+      beginRemoteActuatorsPwm();
+      return;
+    case REMOTE_ACTUATOR_BACKEND_ST3020:
+      // Placeholder for future ST3020 backend.
+      return;
+    default:
+      return;
+  }
+}
+
 void markRemoteCommandReceived() {
   packetReceived = true;
   lastRxMs = millis();
@@ -1286,19 +1358,6 @@ void ensureRemoteMqttConnected(uint32_t nowMs) {
   publishRemoteDiag("mqtt_connected");
 }
 
-void writeServos() {
-  lastPanPulseUs = quantizePulseUs(
-      angleToPulseUs(panAngleDeg, PAN_MIN_DEG, PAN_MAX_DEG,
-                     PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US),
-      PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US);
-  lastTiltPulseUs = quantizePulseUs(
-      angleToPulseUs(tiltModelDegToServoDeg(tiltAngleDeg), TILT_SERVO_MIN_DEG, TILT_SERVO_MAX_DEG,
-                     TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US),
-      TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
-  panServo.writeMicroseconds(lastPanPulseUs);
-  tiltServo.writeMicroseconds(lastTiltPulseUs);
-}
-
 void updateHeliostatTracking(uint32_t nowMs) {
   (void)nowMs;
 
@@ -1462,18 +1521,7 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);
   tiltAngleDeg = stepToward(tiltAngleDeg, tiltTargetDeg, maxStep);
-  writeServos();
-}
-
-void beginServos() {
-  ESP32PWM::allocateTimer(0);
-  ESP32PWM::allocateTimer(1);
-  panServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
-  tiltServo.setPeriodHertz(SERVO_FREQUENCY_HZ);
-  panServo.attach(PAN_SERVO_PIN, PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US);
-  tiltServo.attach(TILT_SERVO_PIN, TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
-  writeServos();
-  delay(250);
+  writeRemoteActuators();
 }
 
 void beginRemoteMqtt() {
@@ -1970,7 +2018,7 @@ void setup() {
   controller.begin();
   applyLedFromPanTilt(millis());
 #else
-  beginServos();
+  beginRemoteActuators();
   beginRemoteMqtt();
 #endif
 
@@ -1998,8 +2046,11 @@ void setup() {
   Serial.printf("WiFi target SSID=%s | MQTT=%s:%u | topic=%s\n",
                 REMOTE_WIFI_SSID_VALUE, REMOTE_MQTT_HOST_VALUE,
                 static_cast<unsigned>(REMOTE_MQTT_PORT_VALUE), REMOTE_MQTT_BASE_TOPIC_VALUE);
-  Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
-                PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
+  Serial.printf("Actuator backend: %s\n", remoteActuatorBackendName());
+  if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_PWM) {
+    Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
+                  PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
+  }
   Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
   Serial.printf("Tilt model/servo: model %.1f deg -> servo %.1f deg | offset=%+.1f deg\n",
                 TILT_START_DEG, TILT_SERVO_AT_MODEL_HORIZON_DEG, TILT_SERVO_OFFSET_DEG);
