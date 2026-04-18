@@ -4,6 +4,7 @@
 #include <BLEController.h>
 #include <BLEControllerRegistry.h>
 #include <ESP32Servo.h>
+#include <SCServo.h>
 #ifndef MQTT_MAX_PACKET_SIZE
 #define MQTT_MAX_PACKET_SIZE 512
 #endif
@@ -30,7 +31,7 @@ namespace {
 #error "Define DEVICE_ROLE_CONTROLLER or DEVICE_ROLE_REMOTE in platformio.ini"
 #endif
 
-constexpr bool STATUS_LED_ENABLED = true;
+constexpr bool STATUS_LED_ENABLED = false;
 constexpr int STATUS_LED_PIN = 38;
 constexpr int STATUS_LED_COUNT = 1;
 constexpr uint8_t LED_BRIGHTNESS = 32;
@@ -75,7 +76,19 @@ constexpr bool SHOW_SERVO_PULSE_US_IN_LOGS = false;
 constexpr int SERVO_FREQUENCY_HZ = 350;
 constexpr uint8_t REMOTE_ACTUATOR_BACKEND_PWM = 0;
 constexpr uint8_t REMOTE_ACTUATOR_BACKEND_ST3020 = 1;
-constexpr uint8_t REMOTE_ACTUATOR_BACKEND = REMOTE_ACTUATOR_BACKEND_PWM;
+constexpr uint8_t REMOTE_ACTUATOR_BACKEND = REMOTE_ACTUATOR_BACKEND_ST3020;
+constexpr int ST3020_UART_RX_PIN = 18;
+constexpr int ST3020_UART_TX_PIN = 19;
+constexpr uint32_t ST3020_UART_BAUD = 1000000;
+constexpr uint8_t ST3020_PAN_ID = 1;
+constexpr uint8_t ST3020_TILT_ID = 2;
+constexpr uint16_t ST3020_DEFAULT_SPEED = 1500;
+constexpr uint8_t ST3020_DEFAULT_ACC = 100;
+constexpr int ST3020_POS_AT_0_DEG = 1024;
+constexpr int ST3020_POS_AT_90_DEG = 2048;
+constexpr int ST3020_POS_AT_180_DEG = 3072;
+constexpr int ST3020_POS_MIN = ST3020_POS_AT_0_DEG;
+constexpr int ST3020_POS_MAX = ST3020_POS_AT_180_DEG;
 constexpr float SPEED_CURVE_EXPONENT = 1.8f;
 constexpr float HELIOSTAT_LATITUDE_DEG = 46.20027148248908f;
 constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
@@ -220,6 +233,7 @@ Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ8
 #if defined(DEVICE_ROLE_REMOTE)
 Servo panServo;
 Servo tiltServo;
+SMS_STS st3020Bus;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
 #endif
@@ -754,6 +768,63 @@ int tiltAngleDegToLegacyPulseUs(float tiltDeg) {
       TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
 }
 
+int st3020PositionFromAngleDeg(float angleDeg) {
+  const float clamped = constrain(angleDeg, 0.0f, 180.0f);
+  const float normalized = clamped / 180.0f;
+  return constrain(
+      ST3020_POS_AT_0_DEG +
+          static_cast<int>(lroundf(normalized * static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_0_DEG))),
+      ST3020_POS_MIN, ST3020_POS_MAX);
+}
+
+void beginRemoteActuatorsSt3020() {
+  Serial1.begin(ST3020_UART_BAUD, SERIAL_8N1, ST3020_UART_RX_PIN, ST3020_UART_TX_PIN);
+  st3020Bus.pSerial = &Serial1;
+  st3020Bus.IOTimeOut = 100;
+
+  Serial.printf("ST3020 bus: RX=%d TX=%d baud=%lu | pan_id=%u tilt_id=%u\n",
+                ST3020_UART_RX_PIN, ST3020_UART_TX_PIN,
+                static_cast<unsigned long>(ST3020_UART_BAUD),
+                static_cast<unsigned>(ST3020_PAN_ID),
+                static_cast<unsigned>(ST3020_TILT_ID));
+  Serial.printf("ST3020 map: 0deg=%d 90deg=%d 180deg=%d\n",
+                ST3020_POS_AT_0_DEG, ST3020_POS_AT_90_DEG, ST3020_POS_AT_180_DEG);
+
+  const int panPing = st3020Bus.Ping(ST3020_PAN_ID);
+  const int tiltPing = st3020Bus.Ping(ST3020_TILT_ID);
+  Serial.printf("ST3020 ping: pan=%s tilt=%s\n",
+                panPing >= 0 ? "ok" : "missing",
+                tiltPing >= 0 ? "ok" : "missing");
+
+  const int panTorque = st3020Bus.EnableTorque(ST3020_PAN_ID, 1);
+  const int tiltTorque = st3020Bus.EnableTorque(ST3020_TILT_ID, 1);
+  Serial.printf("ST3020 torque enable: pan=%d tilt=%d\n", panTorque, tiltTorque);
+
+  const int panFeedback = st3020Bus.FeedBack(ST3020_PAN_ID);
+  const int panPosition = panFeedback >= 0 ? st3020Bus.ReadPos(-1) : -1;
+  const int tiltFeedback = st3020Bus.FeedBack(ST3020_TILT_ID);
+  const int tiltPosition = tiltFeedback >= 0 ? st3020Bus.ReadPos(-1) : -1;
+  Serial.printf("ST3020 feedback: pan=%d tilt=%d\n", panPosition, tiltPosition);
+}
+
+void writeRemoteActuatorsSt3020() {
+  const int panPosition = st3020PositionFromAngleDeg(panAngleDeg);
+  const int tiltPosition = st3020PositionFromAngleDeg(tiltAngleDeg);
+  lastPanPulseUs = panPosition;
+  lastTiltPulseUs = tiltPosition;
+  const int panResult =
+      st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
+  const int tiltResult =
+      st3020Bus.WritePosEx(ST3020_TILT_ID, static_cast<s16>(tiltPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
+  static uint32_t lastSt3020LogMs = 0;
+  const uint32_t nowMs = millis();
+  if ((nowMs - lastSt3020LogMs) >= 1000) {
+    lastSt3020LogMs = nowMs;
+    Serial.printf("ST3020 write: pan=%d r=%d | tilt=%d r=%d\n",
+                  panPosition, panResult, tiltPosition, tiltResult);
+  }
+}
+
 void writeRemoteActuatorsPwm() {
   lastPanPulseUs = panAngleDegToLegacyPulseUs(panAngleDeg);
   lastTiltPulseUs = tiltAngleDegToLegacyPulseUs(tiltAngleDeg);
@@ -778,7 +849,7 @@ void writeRemoteActuators() {
       writeRemoteActuatorsPwm();
       return;
     case REMOTE_ACTUATOR_BACKEND_ST3020:
-      // Placeholder for future ST3020 backend.
+      writeRemoteActuatorsSt3020();
       return;
     default:
       return;
@@ -791,7 +862,8 @@ void beginRemoteActuators() {
       beginRemoteActuatorsPwm();
       return;
     case REMOTE_ACTUATOR_BACKEND_ST3020:
-      // Placeholder for future ST3020 backend.
+      beginRemoteActuatorsSt3020();
+      writeRemoteActuatorsSt3020();
       return;
     default:
       return;
