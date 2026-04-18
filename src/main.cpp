@@ -43,9 +43,9 @@ constexpr float PAN_MODEL_SIGN = -1.0f;
 
 constexpr float TILT_MIN_DEG = 0.0f;
 constexpr float TILT_MAX_DEG = 180.0f;
-constexpr float TILT_START_DEG = 90.0f;
+constexpr float TILT_START_DEG = 180.0f;
 constexpr float TILT_MODEL_SIGN = -1.0f;
-constexpr float TILT_SERVO_OFFSET_DEG = 90.0f;
+constexpr float TILT_SERVO_OFFSET_DEG = 0.0f;
 constexpr float TILT_SERVO_MIN_DEG = 00.0f;
 constexpr float TILT_SERVO_MAX_DEG = 180.0f;
 constexpr float TILT_SERVO_AT_MODEL_HORIZON_DEG = TILT_START_DEG + TILT_SERVO_OFFSET_DEG;
@@ -82,13 +82,23 @@ constexpr int ST3020_UART_TX_PIN = 19;
 constexpr uint32_t ST3020_UART_BAUD = 1000000;
 constexpr uint8_t ST3020_PAN_ID = 1;
 constexpr uint8_t ST3020_TILT_ID = 2;
-constexpr uint16_t ST3020_DEFAULT_SPEED = 1500;
-constexpr uint8_t ST3020_DEFAULT_ACC = 100;
+constexpr uint16_t ST3020_DEFAULT_SPEED = 4000;
+constexpr uint8_t ST3020_DEFAULT_ACC = 50;
+constexpr float ST3020_PAN_SIGN = -1.0f;
+constexpr float ST3020_TILT_SIGN = -1.0f;
 constexpr int ST3020_POS_AT_0_DEG = 1024;
 constexpr int ST3020_POS_AT_90_DEG = 2048;
 constexpr int ST3020_POS_AT_180_DEG = 3072;
-constexpr int ST3020_POS_MIN = ST3020_POS_AT_0_DEG;
-constexpr int ST3020_POS_MAX = ST3020_POS_AT_180_DEG;
+constexpr int ST3020_PAN_POS_MIN = ST3020_POS_AT_0_DEG;
+constexpr int ST3020_PAN_POS_MAX = ST3020_POS_AT_180_DEG;
+constexpr int ST3020_TILT_POS_MIN = 0;
+constexpr int ST3020_TILT_POS_MAX = 4095;
+constexpr float ST3020_PAN_MIN_DEG = 0.0f;
+constexpr float ST3020_PAN_MAX_DEG = 180.0f;
+constexpr float ST3020_TILT_MIN_DEG = 0.0f;
+constexpr float ST3020_TILT_MAX_DEG = 210.0f;
+constexpr float ST3020_TILT_EXTERNAL_MIN_DEG = -30.0f;
+constexpr float ST3020_TILT_EXTERNAL_MAX_DEG = 180.0f;
 constexpr float SPEED_CURVE_EXPONENT = 1.8f;
 constexpr float HELIOSTAT_LATITUDE_DEG = 46.20027148248908f;
 constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
@@ -743,6 +753,11 @@ void setControllerHeliostatTimeScale(float scale) {
 int lastPanPulseUs = 0;
 int lastTiltPulseUs = 0;
 
+float panMinLimitDeg();
+float panMaxLimitDeg();
+float tiltMinLimitDeg();
+float tiltMaxLimitDeg();
+
 const char* remoteActuatorBackendName() {
   switch (REMOTE_ACTUATOR_BACKEND) {
     case REMOTE_ACTUATOR_BACKEND_PWM:
@@ -752,6 +767,46 @@ const char* remoteActuatorBackendName() {
     default:
       return "unknown";
   }
+}
+
+float panMinLimitDeg() {
+  return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_PAN_MIN_DEG : PAN_MIN_DEG;
+}
+
+float panMaxLimitDeg() {
+  return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_PAN_MAX_DEG : PAN_MAX_DEG;
+}
+
+float tiltMinLimitDeg() {
+  return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_TILT_MIN_DEG : TILT_MIN_DEG;
+}
+
+float tiltMaxLimitDeg() {
+  return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_TILT_MAX_DEG : TILT_MAX_DEG;
+}
+
+float tiltExternalFromInternalDeg(float internalDeg) {
+  if (REMOTE_ACTUATOR_BACKEND != REMOTE_ACTUATOR_BACKEND_ST3020) {
+    return internalDeg;
+  }
+  return 180.0f - internalDeg;
+}
+
+float tiltInternalFromExternalDeg(float externalDeg) {
+  if (REMOTE_ACTUATOR_BACKEND != REMOTE_ACTUATOR_BACKEND_ST3020) {
+    return externalDeg;
+  }
+  const float clampedExternal =
+      constrain(externalDeg, ST3020_TILT_EXTERNAL_MIN_DEG, ST3020_TILT_EXTERNAL_MAX_DEG);
+  return constrain(180.0f - clampedExternal, tiltMinLimitDeg(), tiltMaxLimitDeg());
+}
+
+float tiltExternalMinLimitDeg() {
+  return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_TILT_EXTERNAL_MIN_DEG : tiltMinLimitDeg();
+}
+
+float tiltExternalMaxLimitDeg() {
+  return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_TILT_EXTERNAL_MAX_DEG : tiltMaxLimitDeg();
 }
 
 int panAngleDegToLegacyPulseUs(float panDeg) {
@@ -768,13 +823,24 @@ int tiltAngleDegToLegacyPulseUs(float tiltDeg) {
       TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US);
 }
 
-int st3020PositionFromAngleDeg(float angleDeg) {
-  const float clamped = constrain(angleDeg, 0.0f, 180.0f);
-  const float normalized = clamped / 180.0f;
+int st3020PanPositionFromAngleDeg(float angleDeg) {
+  const float clamped = constrain(angleDeg, ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
+  const float stepsPerDeg =
+      static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_90_DEG) / 90.0f;
+  const float signedOffsetDeg = (clamped - 90.0f) * ST3020_PAN_SIGN;
   return constrain(
-      ST3020_POS_AT_0_DEG +
-          static_cast<int>(lroundf(normalized * static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_0_DEG))),
-      ST3020_POS_MIN, ST3020_POS_MAX);
+      ST3020_POS_AT_90_DEG + static_cast<int>(lroundf(signedOffsetDeg * stepsPerDeg)),
+      ST3020_PAN_POS_MIN, ST3020_PAN_POS_MAX);
+}
+
+int st3020TiltPositionFromAngleDeg(float angleDeg) {
+  const float clamped = constrain(angleDeg, ST3020_TILT_MIN_DEG, ST3020_TILT_MAX_DEG);
+  const float stepsPerDeg =
+      static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_90_DEG) / 90.0f;
+  const float signedOffsetDeg = (clamped - 90.0f) * ST3020_TILT_SIGN;
+  return constrain(
+      ST3020_POS_AT_90_DEG + static_cast<int>(lroundf(signedOffsetDeg * stepsPerDeg)),
+      ST3020_TILT_POS_MIN, ST3020_TILT_POS_MAX);
 }
 
 void beginRemoteActuatorsSt3020() {
@@ -796,8 +862,8 @@ void beginRemoteActuatorsSt3020() {
                 panPing >= 0 ? "ok" : "missing",
                 tiltPing >= 0 ? "ok" : "missing");
 
-  const int panTorque = st3020Bus.EnableTorque(ST3020_PAN_ID, 1);
-  const int tiltTorque = st3020Bus.EnableTorque(ST3020_TILT_ID, 1);
+  const int panTorque = st3020Bus.EnableTorque(ST3020_PAN_ID, 0);
+  const int tiltTorque = st3020Bus.EnableTorque(ST3020_TILT_ID, 0);
   Serial.printf("ST3020 torque enable: pan=%d tilt=%d\n", panTorque, tiltTorque);
 
   const int panFeedback = st3020Bus.FeedBack(ST3020_PAN_ID);
@@ -808,8 +874,8 @@ void beginRemoteActuatorsSt3020() {
 }
 
 void writeRemoteActuatorsSt3020() {
-  const int panPosition = st3020PositionFromAngleDeg(panAngleDeg);
-  const int tiltPosition = st3020PositionFromAngleDeg(tiltAngleDeg);
+  const int panPosition = st3020PanPositionFromAngleDeg(panAngleDeg);
+  const int tiltPosition = st3020TiltPositionFromAngleDeg(tiltAngleDeg);
   lastPanPulseUs = panPosition;
   lastTiltPulseUs = tiltPosition;
   const int panResult =
@@ -922,7 +988,7 @@ void publishRemoteDiag(const char* event) {
   doc["mode"] = controlModeName(controlMode);
   doc["scan_stage"] = scanStageName(scanStage);
   doc["pan_deg"] = panAngleDeg;
-  doc["tilt_deg"] = tiltAngleDeg;
+  doc["tilt_deg"] = tiltExternalFromInternalDeg(tiltAngleDeg);
   time_t unixTimeUtc = 0;
   if (currentUnixTimeUtc(unixTimeUtc)) {
     doc["remote_utc"] = static_cast<int64_t>(unixTimeUtc);
@@ -951,9 +1017,13 @@ void publishRemoteState(bool force = false) {
   JsonDocument doc;
   doc["mode"] = controlModeName(controlMode);
   doc["pan_deg"] = panAngleDeg;
-  doc["tilt_deg"] = tiltAngleDeg;
+  doc["tilt_deg"] = tiltExternalFromInternalDeg(tiltAngleDeg);
   doc["pan_target_deg"] = panTargetDeg;
-  doc["tilt_target_deg"] = tiltTargetDeg;
+  doc["tilt_target_deg"] = tiltExternalFromInternalDeg(tiltTargetDeg);
+  doc["pan_min_deg"] = panMinLimitDeg();
+  doc["pan_max_deg"] = panMaxLimitDeg();
+  doc["tilt_min_deg"] = tiltExternalMinLimitDeg();
+  doc["tilt_max_deg"] = tiltExternalMaxLimitDeg();
   doc["pan_us"] = lastPanPulseUs;
   doc["tilt_us"] = lastTiltPulseUs;
   doc["site_latitude_deg"] = heliostatLatitudeDeg;
@@ -963,7 +1033,7 @@ void publishRemoteState(bool force = false) {
   doc["scan_stage"] = scanStageName(scanStage);
   doc["scan_direction"] = (scanDirection >= 0) ? "forward" : "backward";
   doc["scan_center_pan_deg"] = scanCenterPanDeg;
-  doc["scan_center_tilt_deg"] = scanCenterTiltDeg;
+  doc["scan_center_tilt_deg"] = tiltExternalFromInternalDeg(scanCenterTiltDeg);
   doc["scan_range_pan_deg"] = scanRangePanDeg;
   doc["scan_range_tilt_deg"] = scanRangeTiltDeg;
   doc["scan_step_deg"] = scanStepDeg;
@@ -973,12 +1043,12 @@ void publishRemoteState(bool force = false) {
   doc["scan_points_total"] = scanPointsTotal;
   doc["scan_lock_valid"] = scanLockValid;
   doc["scan_lock_pan_deg"] = scanLockPanDeg;
-  doc["scan_lock_tilt_deg"] = scanLockTiltDeg;
+  doc["scan_lock_tilt_deg"] = tiltExternalFromInternalDeg(scanLockTiltDeg);
   doc["approx_target_valid"] = approxTargetValid;
   doc["approx_target_bearing_deg"] = approxTargetBearingDeg;
   doc["approx_target_elevation_deg"] = approxTargetElevationDeg;
   doc["approx_target_pan_deg"] = approxTargetPanDeg;
-  doc["approx_target_tilt_deg"] = approxTargetTiltDeg;
+  doc["approx_target_tilt_deg"] = tiltExternalFromInternalDeg(approxTargetTiltDeg);
   doc["sun_time_ok"] = sunTimeValid;
   doc["target_ok"] = targetDirectionValid;
   doc["auto_enabled"] = autoTrackEnabled;
@@ -1049,8 +1119,8 @@ void setScanTargetForIndex(uint16_t index) {
 
   const float pan = scanCenterPanDeg - scanRangePanDeg + (static_cast<float>(col) * scanStepDeg);
   const float tilt = scanCenterTiltDeg + scanRangeTiltDeg - (static_cast<float>(row) * scanStepDeg);
-  panTargetDeg = constrain(pan, PAN_MIN_DEG, PAN_MAX_DEG);
-  tiltTargetDeg = constrain(tilt, TILT_MIN_DEG, TILT_MAX_DEG);
+  panTargetDeg = constrain(pan, panMinLimitDeg(), panMaxLimitDeg());
+  tiltTargetDeg = constrain(tilt, tiltMinLimitDeg(), tiltMaxLimitDeg());
 }
 
 void startScan(ScanStage stage,
@@ -1071,8 +1141,8 @@ void startScan(ScanStage stage,
   scanActive = true;
   scanPaused = false;
   scanDirection = (direction < 0) ? -1 : 1;
-  scanCenterPanDeg = constrain(centerPanDeg, PAN_MIN_DEG, PAN_MAX_DEG);
-  scanCenterTiltDeg = constrain(centerTiltDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+  scanCenterPanDeg = constrain(centerPanDeg, panMinLimitDeg(), panMaxLimitDeg());
+  scanCenterTiltDeg = constrain(centerTiltDeg, tiltMinLimitDeg(), tiltMaxLimitDeg());
   if (stage == SCAN_STAGE_COARSE) {
     scanRangePanDeg = SCAN_COARSE_RANGE_PAN_DEG;
     scanRangeTiltDeg = SCAN_COARSE_RANGE_TILT_DEG;
@@ -1137,7 +1207,7 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   const float defaultCenterPan = scanLockValid ? scanLockPanDeg : panTargetDeg;
   const float defaultCenterTilt = scanLockValid ? scanLockTiltDeg : tiltTargetDeg;
   const float centerPan = doc["center_pan_deg"] | defaultCenterPan;
-  const float centerTilt = doc["center_tilt_deg"] | defaultCenterTilt;
+  const float centerTiltExternal = doc["center_tilt_deg"] | tiltExternalFromInternalDeg(defaultCenterTilt);
   const uint32_t dwellMs = doc["dwell_ms"] | 0;
   const float moveSpeedDegPerSec = doc["move_speed_deg_per_sec"] | -1.0f;
   const char* directionString = doc["direction"] | "forward";
@@ -1146,11 +1216,11 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   const float rangeTiltDeg = doc["range_tilt_deg"] | -1.0f;
 
   if (strcmp(stage, "coarse") == 0) {
-    startScan(SCAN_STAGE_COARSE, centerPan, centerTilt, dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_COARSE, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "fine") == 0) {
-    startScan(SCAN_STAGE_FINE, centerPan, centerTilt, dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_FINE, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "micro") == 0) {
-    startScan(SCAN_STAGE_MICRO, centerPan, centerTilt, dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_MICRO, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), dwellMs, moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
   }
 }
 
@@ -1198,9 +1268,9 @@ void handleRemoteJogCommand(const JsonDocument& doc) {
   precisionManualMode = false;
 
   if (strcmp(axis, "pan") == 0) {
-    panTargetDeg = constrain(panTargetDeg + deltaDeg, PAN_MIN_DEG, PAN_MAX_DEG);
+    panTargetDeg = constrain(panTargetDeg + deltaDeg, panMinLimitDeg(), panMaxLimitDeg());
   } else if (strcmp(axis, "tilt") == 0) {
-    tiltTargetDeg = constrain(tiltTargetDeg + deltaDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+    tiltTargetDeg = constrain(tiltTargetDeg + deltaDeg, tiltMinLimitDeg(), tiltMaxLimitDeg());
   }
 }
 
@@ -1211,8 +1281,8 @@ void handleRemoteMoveToCommand(const JsonDocument& doc) {
   remotePanInput = 0.0f;
   remoteTiltInput = 0.0f;
   precisionManualMode = false;
-  panTargetDeg = constrain(doc["pan_deg"] | panTargetDeg, PAN_MIN_DEG, PAN_MAX_DEG);
-  tiltTargetDeg = constrain(doc["tilt_deg"] | tiltTargetDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+  panTargetDeg = constrain(doc["pan_deg"] | panTargetDeg, panMinLimitDeg(), panMaxLimitDeg());
+  tiltTargetDeg = tiltInternalFromExternalDeg(doc["tilt_deg"] | tiltExternalFromInternalDeg(tiltTargetDeg));
 }
 
 void handleRemoteApproxTargetCommand(const JsonDocument& doc) {
@@ -1534,10 +1604,10 @@ void updateTargetsFromRemoteInput(uint32_t nowMs) {
       precisionManualMode ? MANUAL_PRECISION_SPEED_DEG_PER_SEC : MAX_TARGET_SPEED_DEG_PER_SEC;
   panTargetDeg = constrain(
       panTargetDeg + (applySpeedCurve(remotePanInput) * manualSpeedDegPerSec * dt),
-      PAN_MIN_DEG, PAN_MAX_DEG);
+      panMinLimitDeg(), panMaxLimitDeg());
   tiltTargetDeg = constrain(
       tiltTargetDeg + (applySpeedCurve(remoteTiltInput) * manualSpeedDegPerSec * dt),
-      TILT_MIN_DEG, TILT_MAX_DEG);
+      tiltMinLimitDeg(), tiltMaxLimitDeg());
 }
 
 void updateScanState(uint32_t nowMs) {
@@ -1961,11 +2031,11 @@ void updateLedFromXbox(uint32_t nowMs) {
   blinkActive = autoTrackEnabled || (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
 
   panAngleDeg = constrain(
-      PAN_START_DEG + (remotePanInput * ((PAN_MAX_DEG - PAN_MIN_DEG) * 0.5f)),
-      PAN_MIN_DEG, PAN_MAX_DEG);
+      PAN_START_DEG + (remotePanInput * ((panMaxLimitDeg() - panMinLimitDeg()) * 0.5f)),
+      panMinLimitDeg(), panMaxLimitDeg());
   tiltAngleDeg = constrain(
-      TILT_START_DEG + (remoteTiltInput * ((TILT_MAX_DEG - TILT_MIN_DEG) * 0.5f)),
-      TILT_MIN_DEG, TILT_MAX_DEG);
+      TILT_START_DEG + (remoteTiltInput * ((tiltMaxLimitDeg() - tiltMinLimitDeg()) * 0.5f)),
+      tiltMinLimitDeg(), tiltMaxLimitDeg());
   applyLedFromPanTilt(nowMs);
   sendLedPacket();
 #else

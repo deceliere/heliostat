@@ -200,8 +200,8 @@ function bindKeyboardJog() {
   const keyMap = {
     ArrowLeft: { axis: "pan", direction: 1 },
     ArrowRight: { axis: "pan", direction: -1 },
-    ArrowUp: { axis: "tilt", direction: -1 },
-    ArrowDown: { axis: "tilt", direction: 1 },
+    ArrowUp: { axis: "tilt", direction: 1 },
+    ArrowDown: { axis: "tilt", direction: -1 },
   };
 
   window.addEventListener("keydown", (event) => {
@@ -457,6 +457,16 @@ async function refreshUi() {
   try {
     const [health, state] = await Promise.all([loadHealth(), loadState()]);
     latestState = state;
+    const panInput = document.getElementById("pan-absolute");
+    const tiltInput = document.getElementById("tilt-absolute");
+    if (panInput) {
+      if (typeof state.pan_min_deg === "number") panInput.min = String(state.pan_min_deg);
+      if (typeof state.pan_max_deg === "number") panInput.max = String(state.pan_max_deg);
+    }
+    if (tiltInput) {
+      if (typeof state.tilt_min_deg === "number") tiltInput.min = String(state.tilt_min_deg);
+      if (typeof state.tilt_max_deg === "number") tiltInput.max = String(state.tilt_max_deg);
+    }
     setStatusPill("backend-status", health.ok ? "Online" : "Offline", health.ok ? "green" : "red");
     setStatusPill("mqtt-status", health.mqtt_connected ? "Connected" : "Disconnected", health.mqtt_connected ? "green" : "red");
     setStatusPill("remote-status", health.remote_online ? "Online" : "Offline", health.remote_online ? "green" : "red");
