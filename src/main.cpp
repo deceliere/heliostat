@@ -84,6 +84,9 @@ constexpr uint8_t ST3020_PAN_ID = 1;
 constexpr uint8_t ST3020_TILT_ID = 2;
 constexpr uint16_t ST3020_DEFAULT_SPEED = 4000;
 constexpr uint8_t ST3020_DEFAULT_ACC = 50;
+constexpr bool ST3020_HOLD_TORQUE_ENABLED = false;
+constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
+constexpr uint32_t ST3020_TORQUE_RELEASE_IDLE_MS = 250;
 constexpr float ST3020_PAN_SIGN = -1.0f;
 constexpr float ST3020_TILT_SIGN = -1.0f;
 constexpr int ST3020_POS_AT_0_DEG = 1024;
@@ -244,6 +247,15 @@ Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ8
 Servo panServo;
 Servo tiltServo;
 SMS_STS st3020Bus;
+bool st3020TorqueEnabled = false;
+bool st3020PanFeedbackValid = false;
+bool st3020TiltFeedbackValid = false;
+uint32_t lastSt3020FeedbackMs = 0;
+uint32_t lastSt3020MotionCommandMs = 0;
+int st3020PanFeedbackPosition = -1;
+int st3020TiltFeedbackPosition = -1;
+int st3020PanVoltageTenths = -1;
+int st3020TiltVoltageTenths = -1;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
 #endif
@@ -843,6 +855,59 @@ int st3020TiltPositionFromAngleDeg(float angleDeg) {
       ST3020_TILT_POS_MIN, ST3020_TILT_POS_MAX);
 }
 
+float st3020PanAngleDegFromPosition(int position) {
+  const float clamped = static_cast<float>(constrain(position, ST3020_PAN_POS_MIN, ST3020_PAN_POS_MAX));
+  const float stepsPerDeg =
+      static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_90_DEG) / 90.0f;
+  const float signedOffsetDeg = (clamped - static_cast<float>(ST3020_POS_AT_90_DEG)) / stepsPerDeg;
+  return constrain(90.0f + (signedOffsetDeg / ST3020_PAN_SIGN), ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
+}
+
+float st3020TiltAngleDegFromPosition(int position) {
+  const float clamped = static_cast<float>(constrain(position, ST3020_TILT_POS_MIN, ST3020_TILT_POS_MAX));
+  const float stepsPerDeg =
+      static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_90_DEG) / 90.0f;
+  const float signedOffsetDeg = (clamped - static_cast<float>(ST3020_POS_AT_90_DEG)) / stepsPerDeg;
+  return constrain(90.0f + (signedOffsetDeg / ST3020_TILT_SIGN), ST3020_TILT_MIN_DEG, ST3020_TILT_MAX_DEG);
+}
+
+void setSt3020TorqueEnabled(bool enabled) {
+  const int panResult = st3020Bus.EnableTorque(ST3020_PAN_ID, enabled ? 1 : 0);
+  const int tiltResult = st3020Bus.EnableTorque(ST3020_TILT_ID, enabled ? 1 : 0);
+  st3020TorqueEnabled = enabled;
+  Serial.printf("ST3020 torque %s: pan=%d tilt=%d\n", enabled ? "on" : "off", panResult, tiltResult);
+}
+
+void updateSt3020Feedback(bool force = false) {
+  const uint32_t nowMs = millis();
+  if (!force && (nowMs - lastSt3020FeedbackMs) < ST3020_FEEDBACK_POLL_MS) {
+    return;
+  }
+  lastSt3020FeedbackMs = nowMs;
+
+  const int panFeedback = st3020Bus.FeedBack(ST3020_PAN_ID);
+  st3020PanFeedbackValid = (panFeedback >= 0);
+  if (st3020PanFeedbackValid) {
+    st3020PanFeedbackPosition = st3020Bus.ReadPos(-1);
+    st3020PanVoltageTenths = st3020Bus.ReadVoltage(-1);
+    lastPanPulseUs = st3020PanFeedbackPosition;
+    panAngleDeg = st3020PanAngleDegFromPosition(st3020PanFeedbackPosition);
+  } else {
+    st3020PanVoltageTenths = -1;
+  }
+
+  const int tiltFeedback = st3020Bus.FeedBack(ST3020_TILT_ID);
+  st3020TiltFeedbackValid = (tiltFeedback >= 0);
+  if (st3020TiltFeedbackValid) {
+    st3020TiltFeedbackPosition = st3020Bus.ReadPos(-1);
+    st3020TiltVoltageTenths = st3020Bus.ReadVoltage(-1);
+    lastTiltPulseUs = st3020TiltFeedbackPosition;
+    tiltAngleDeg = st3020TiltAngleDegFromPosition(st3020TiltFeedbackPosition);
+  } else {
+    st3020TiltVoltageTenths = -1;
+  }
+}
+
 void beginRemoteActuatorsSt3020() {
   Serial1.begin(ST3020_UART_BAUD, SERIAL_8N1, ST3020_UART_RX_PIN, ST3020_UART_TX_PIN);
   st3020Bus.pSerial = &Serial1;
@@ -861,23 +926,23 @@ void beginRemoteActuatorsSt3020() {
   Serial.printf("ST3020 ping: pan=%s tilt=%s\n",
                 panPing >= 0 ? "ok" : "missing",
                 tiltPing >= 0 ? "ok" : "missing");
-
-  const int panTorque = st3020Bus.EnableTorque(ST3020_PAN_ID, 0);
-  const int tiltTorque = st3020Bus.EnableTorque(ST3020_TILT_ID, 0);
-  Serial.printf("ST3020 torque enable: pan=%d tilt=%d\n", panTorque, tiltTorque);
-
-  const int panFeedback = st3020Bus.FeedBack(ST3020_PAN_ID);
-  const int panPosition = panFeedback >= 0 ? st3020Bus.ReadPos(-1) : -1;
-  const int tiltFeedback = st3020Bus.FeedBack(ST3020_TILT_ID);
-  const int tiltPosition = tiltFeedback >= 0 ? st3020Bus.ReadPos(-1) : -1;
-  Serial.printf("ST3020 feedback: pan=%d tilt=%d\n", panPosition, tiltPosition);
+  Serial.printf("ST3020 hold torque: %s\n", ST3020_HOLD_TORQUE_ENABLED ? "enabled" : "disabled");
+  setSt3020TorqueEnabled(true);
+  updateSt3020Feedback(true);
+  Serial.printf("ST3020 feedback: pan=%d @ %.1fV | tilt=%d @ %.1fV\n",
+                st3020PanFeedbackPosition, static_cast<float>(st3020PanVoltageTenths) / 10.0f,
+                st3020TiltFeedbackPosition, static_cast<float>(st3020TiltVoltageTenths) / 10.0f);
 }
 
 void writeRemoteActuatorsSt3020() {
+  if (!st3020TorqueEnabled) {
+    setSt3020TorqueEnabled(true);
+  }
   const int panPosition = st3020PanPositionFromAngleDeg(panAngleDeg);
   const int tiltPosition = st3020TiltPositionFromAngleDeg(tiltAngleDeg);
   lastPanPulseUs = panPosition;
   lastTiltPulseUs = tiltPosition;
+  lastSt3020MotionCommandMs = millis();
   const int panResult =
       st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
   const int tiltResult =
@@ -889,6 +954,7 @@ void writeRemoteActuatorsSt3020() {
     Serial.printf("ST3020 write: pan=%d r=%d | tilt=%d r=%d\n",
                   panPosition, panResult, tiltPosition, tiltResult);
   }
+  updateSt3020Feedback();
 }
 
 void writeRemoteActuatorsPwm() {
@@ -1026,6 +1092,19 @@ void publishRemoteState(bool force = false) {
   doc["tilt_max_deg"] = tiltExternalMaxLimitDeg();
   doc["pan_us"] = lastPanPulseUs;
   doc["tilt_us"] = lastTiltPulseUs;
+  doc["servo_backend"] = remoteActuatorBackendName();
+  doc["torque_hold_enabled"] = ST3020_HOLD_TORQUE_ENABLED;
+  doc["torque_enabled"] = st3020TorqueEnabled;
+  doc["pan_feedback_ok"] = st3020PanFeedbackValid;
+  doc["tilt_feedback_ok"] = st3020TiltFeedbackValid;
+  if (st3020PanVoltageTenths >= 0) {
+    doc["pan_voltage_v"] = static_cast<float>(st3020PanVoltageTenths) / 10.0f;
+    doc["pan_voltage_tenths_v"] = st3020PanVoltageTenths;
+  }
+  if (st3020TiltVoltageTenths >= 0) {
+    doc["tilt_voltage_v"] = static_cast<float>(st3020TiltVoltageTenths) / 10.0f;
+    doc["tilt_voltage_tenths_v"] = st3020TiltVoltageTenths;
+  }
   doc["site_latitude_deg"] = heliostatLatitudeDeg;
   doc["site_longitude_deg"] = heliostatLongitudeDeg;
   doc["scan_active"] = scanActive;
@@ -1658,11 +1737,29 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   lastServoUpdateMs = nowMs;
 
+  if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+    updateSt3020Feedback();
+  }
+
   const float slewSpeedDegPerSec = scanActive ? scanMoveSpeedDegPerSec : SERVO_MAX_SLEW_DEG_PER_SEC;
   const float maxStep = slewSpeedDegPerSec * (static_cast<float>(elapsedMs) / 1000.0f);
 
   panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);
   tiltAngleDeg = stepToward(tiltAngleDeg, tiltTargetDeg, maxStep);
+  const bool onTarget =
+      fabsf(panAngleDeg - panTargetDeg) <= SCAN_SETTLE_TOLERANCE_DEG &&
+      fabsf(tiltAngleDeg - tiltTargetDeg) <= SCAN_SETTLE_TOLERANCE_DEG;
+
+  if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+    if (!onTarget || ST3020_HOLD_TORQUE_ENABLED) {
+      writeRemoteActuators();
+    } else if (st3020TorqueEnabled &&
+               (nowMs - lastSt3020MotionCommandMs) >= ST3020_TORQUE_RELEASE_IDLE_MS) {
+      setSt3020TorqueEnabled(false);
+    }
+    return;
+  }
+
   writeRemoteActuators();
 }
 
@@ -2097,7 +2194,7 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | ntp=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | target=%7.3f/%7.3f | pan_us=%d | tilt_us=%d | sun_time=%s | target=%s\n",
+      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | ntp=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | target=%7.3f/%7.3f | pan_us=%d | tilt_us=%d | pan_v=%.1f | tilt_v=%.1f | sun_time=%s | target=%s\n",
       controlModeName(controlMode),
       wifiLinkOk ? "ok" : "down",
       mqttLinkOk ? "ok" : "down",
@@ -2106,6 +2203,8 @@ void printStatus(uint32_t nowMs) {
       static_cast<unsigned long>(ageMs),
       panAngleDeg, tiltAngleDeg, panTargetDeg, tiltTargetDeg,
       lastPanPulseUs, lastTiltPulseUs,
+      static_cast<float>(st3020PanVoltageTenths) / 10.0f,
+      static_cast<float>(st3020TiltVoltageTenths) / 10.0f,
       sunTimeValid ? "ok" : "missing",
       targetDirectionValid ? "ok" : "missing");
 #endif
