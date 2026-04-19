@@ -84,7 +84,7 @@ constexpr uint8_t ST3020_PAN_ID = 1;
 constexpr uint8_t ST3020_TILT_ID = 2;
 constexpr uint16_t ST3020_DEFAULT_SPEED = 4000;
 constexpr uint8_t ST3020_DEFAULT_ACC = 50;
-constexpr bool ST3020_HOLD_TORQUE_ENABLED = false;
+constexpr bool ST3020_HOLD_TORQUE_ENABLED = true;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
 constexpr uint32_t ST3020_TORQUE_RELEASE_IDLE_MS = 250;
 constexpr float ST3020_PAN_SIGN = -1.0f;
@@ -103,8 +103,8 @@ constexpr float ST3020_TILT_MAX_DEG = 210.0f;
 constexpr float ST3020_TILT_EXTERNAL_MIN_DEG = -30.0f;
 constexpr float ST3020_TILT_EXTERNAL_MAX_DEG = 180.0f;
 constexpr float SPEED_CURVE_EXPONENT = 1.8f;
-constexpr float HELIOSTAT_LATITUDE_DEG = 46.20027148248908f;
-constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139431924071319f;
+constexpr float HELIOSTAT_LATITUDE_DEG = 46.200316f;
+constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139345f;
 constexpr time_t HELIOSTAT_START_UNIX_TIME_UTC = 0;
 constexpr float HELIOSTAT_TIME_SCALE = 1.0f;
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
@@ -114,7 +114,7 @@ constexpr uint32_t REMOTE_MQTT_RETRY_MS = 5000;
 constexpr uint32_t REMOTE_NTP_RETRY_MS = 15000;
 constexpr uint32_t REMOTE_NTP_RESYNC_MS = 60000;
 constexpr time_t MIN_VALID_UNIX_TIME_UTC = 1704067200;
-constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 1024;
+constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 2048;
 constexpr float SCAN_SETTLE_TOLERANCE_DEG = 0.35f;
 constexpr uint32_t SCAN_COARSE_DWELL_MS = 180;
 constexpr uint32_t SCAN_FINE_DWELL_MS = 220;
@@ -1103,8 +1103,8 @@ void publishRemoteState(bool force = false) {
   doc["pan_max_deg"] = panMaxLimitDeg();
   doc["tilt_min_deg"] = tiltExternalMinLimitDeg();
   doc["tilt_max_deg"] = tiltExternalMaxLimitDeg();
-  doc["pan_us"] = lastPanPulseUs;
-  doc["tilt_us"] = lastTiltPulseUs;
+  doc["pan_pos"] = lastPanPulseUs;
+  doc["tilt_pos"] = lastTiltPulseUs;
   doc["servo_backend"] = remoteActuatorBackendName();
   doc["torque_hold_enabled"] = ST3020_HOLD_TORQUE_ENABLED;
   doc["torque_enabled"] = st3020TorqueEnabled;
@@ -1112,11 +1112,9 @@ void publishRemoteState(bool force = false) {
   doc["tilt_feedback_ok"] = st3020TiltFeedbackValid;
   if (st3020PanVoltageTenths >= 0) {
     doc["pan_voltage_v"] = static_cast<float>(st3020PanVoltageTenths) / 10.0f;
-    doc["pan_voltage_tenths_v"] = st3020PanVoltageTenths;
   }
   if (st3020TiltVoltageTenths >= 0) {
     doc["tilt_voltage_v"] = static_cast<float>(st3020TiltVoltageTenths) / 10.0f;
-    doc["tilt_voltage_tenths_v"] = st3020TiltVoltageTenths;
   }
   doc["site_latitude_deg"] = heliostatLatitudeDeg;
   doc["site_longitude_deg"] = heliostatLongitudeDeg;
@@ -2217,7 +2215,7 @@ void printStatus(uint32_t nowMs) {
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
-      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | ntp=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | target=%7.3f/%7.3f | pan_us=%d | tilt_us=%d | pan_v=%.1f | tilt_v=%.1f | sun_time=%s | target=%s\n",
+      "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | ntp=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | target=%7.3f/%7.3f | pan_pos=%d | tilt_pos=%d | pan_v=%.1f | tilt_v=%.1f | sun_time=%s | target=%s\n",
       controlModeName(controlMode),
       wifiLinkOk ? "ok" : "down",
       mqttLinkOk ? "ok" : "down",

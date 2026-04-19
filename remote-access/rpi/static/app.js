@@ -256,8 +256,8 @@ function bindKeyboardJog() {
   const keyMap = {
     ArrowLeft: { axis: "pan", direction: 1 },
     ArrowRight: { axis: "pan", direction: -1 },
-    ArrowUp: { axis: "tilt", direction: 1 },
-    ArrowDown: { axis: "tilt", direction: -1 },
+    ArrowUp: { axis: "tilt", direction: -1 },
+    ArrowDown: { axis: "tilt", direction: 1 },
   };
 
   window.addEventListener("keydown", (event) => {
