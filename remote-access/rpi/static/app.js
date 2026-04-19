@@ -14,6 +14,14 @@ async function loadState() {
   return response.json();
 }
 
+async function loadPresets() {
+  const response = await fetch("/api/presets", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`presets request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -34,6 +42,7 @@ let selectedStepDeg = 0.1;
 let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
+let latestPresets = { site_locations: [], beam_directions: [] };
 let scanSpeedSlider = null;
 let scanDwellSlider = null;
 
@@ -120,6 +129,53 @@ function readSiteLocation() {
     latitude_deg: Number(document.getElementById("site-latitude")?.value ?? 0),
     longitude_deg: Number(document.getElementById("site-longitude")?.value ?? 0),
   };
+}
+
+function renderPresetSelect(selectId, items) {
+  const select = document.getElementById(selectId);
+  if (!select) {
+    return;
+  }
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">No preset</option>';
+  items.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = item.name;
+    select.appendChild(option);
+  });
+  if (items.some((item) => item.name === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+function renderPresets() {
+  renderPresetSelect("site-preset-select", latestPresets.site_locations ?? []);
+  renderPresetSelect("beam-preset-select", latestPresets.beam_directions ?? []);
+}
+
+function applySitePresetToInputs(preset) {
+  if (!preset) {
+    return;
+  }
+  const latitudeInput = document.getElementById("site-latitude");
+  const longitudeInput = document.getElementById("site-longitude");
+  const nameInput = document.getElementById("site-preset-name");
+  if (latitudeInput) latitudeInput.value = String(preset.latitude_deg);
+  if (longitudeInput) longitudeInput.value = String(preset.longitude_deg);
+  if (nameInput) nameInput.value = preset.name;
+}
+
+function applyBeamPresetToInputs(preset) {
+  if (!preset) {
+    return;
+  }
+  const bearingInput = document.getElementById("approx-bearing");
+  const elevationInput = document.getElementById("approx-elevation");
+  const nameInput = document.getElementById("beam-preset-name");
+  if (bearingInput) bearingInput.value = String(preset.bearing_deg);
+  if (elevationInput) elevationInput.value = String(preset.elevation_deg);
+  if (nameInput) nameInput.value = preset.name;
 }
 
 async function sendJog(axis, direction, multiplier = 1.0) {
@@ -250,8 +306,14 @@ function bindControlButtons() {
   const loadCurrentButton = document.getElementById("load-current");
   const applySiteLocationButton = document.getElementById("apply-site-location");
   const loadSiteLocationButton = document.getElementById("load-site-location");
+  const loadSitePresetButton = document.getElementById("load-site-preset");
+  const saveSitePresetButton = document.getElementById("save-site-preset");
+  const deleteSitePresetButton = document.getElementById("delete-site-preset");
   const moveApproxTargetButton = document.getElementById("move-approx-target");
   const loadApproxTargetButton = document.getElementById("load-approx-target");
+  const loadBeamPresetButton = document.getElementById("load-beam-preset");
+  const saveBeamPresetButton = document.getElementById("save-beam-preset");
+  const deleteBeamPresetButton = document.getElementById("delete-beam-preset");
   const syncTimeButton = document.getElementById("sync-time");
   const startCoarseScanButton = document.getElementById("start-coarse-scan");
   const beamSeenButton = document.getElementById("beam-seen");
@@ -361,6 +423,33 @@ function bindControlButtons() {
     }
   });
 
+  loadSitePresetButton?.addEventListener("click", () => {
+    const selectedName = document.getElementById("site-preset-select")?.value ?? "";
+    const preset = (latestPresets.site_locations ?? []).find((item) => item.name === selectedName);
+    applySitePresetToInputs(preset);
+  });
+
+  saveSitePresetButton?.addEventListener("click", async () => {
+    const name = document.getElementById("site-preset-name")?.value ?? "";
+    const result = await postJson("/api/presets/site", { name, ...readSiteLocation() });
+    latestPresets = result.presets ?? latestPresets;
+    renderPresets();
+    const select = document.getElementById("site-preset-select");
+    if (select) {
+      select.value = name.trim();
+    }
+  });
+
+  deleteSitePresetButton?.addEventListener("click", async () => {
+    const selectedName = document.getElementById("site-preset-select")?.value ?? "";
+    if (!selectedName) {
+      return;
+    }
+    const result = await postJson("/api/presets/site/delete", { name: selectedName });
+    latestPresets = result.presets ?? latestPresets;
+    renderPresets();
+  });
+
   moveApproxTargetButton?.addEventListener("click", async () => {
     await stopJogging();
     await postJson("/api/cmd/approx-target", readApproxTargetDirection());
@@ -376,6 +465,33 @@ function bindControlButtons() {
     if (tiltInput && typeof latestState.approx_target_tilt_deg === "number") {
       tiltInput.value = String(latestState.approx_target_tilt_deg);
     }
+  });
+
+  loadBeamPresetButton?.addEventListener("click", () => {
+    const selectedName = document.getElementById("beam-preset-select")?.value ?? "";
+    const preset = (latestPresets.beam_directions ?? []).find((item) => item.name === selectedName);
+    applyBeamPresetToInputs(preset);
+  });
+
+  saveBeamPresetButton?.addEventListener("click", async () => {
+    const name = document.getElementById("beam-preset-name")?.value ?? "";
+    const result = await postJson("/api/presets/beam", { name, ...readApproxTargetDirection() });
+    latestPresets = result.presets ?? latestPresets;
+    renderPresets();
+    const select = document.getElementById("beam-preset-select");
+    if (select) {
+      select.value = name.trim();
+    }
+  });
+
+  deleteBeamPresetButton?.addEventListener("click", async () => {
+    const selectedName = document.getElementById("beam-preset-select")?.value ?? "";
+    if (!selectedName) {
+      return;
+    }
+    const result = await postJson("/api/presets/beam/delete", { name: selectedName });
+    latestPresets = result.presets ?? latestPresets;
+    renderPresets();
   });
 
   syncTimeButton?.addEventListener("click", async () => {
@@ -455,8 +571,10 @@ function bindControlButtons() {
 
 async function refreshUi() {
   try {
-    const [health, state] = await Promise.all([loadHealth(), loadState()]);
+    const [health, state, presets] = await Promise.all([loadHealth(), loadState(), loadPresets()]);
     latestState = state;
+    latestPresets = presets;
+    renderPresets();
     const panInput = document.getElementById("pan-absolute");
     const tiltInput = document.getElementById("tilt-absolute");
     if (panInput) {

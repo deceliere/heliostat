@@ -122,6 +122,23 @@
           <button type="button" id="apply-site-location">Apply Site Location</button>
           <button type="button" id="load-site-location">Load Current Site</button>
         </div>
+        <div class="preset-grid">
+          <label>
+            <span class="label">Site Preset</span>
+            <select id="site-preset-select">
+              <option value="">No preset</option>
+            </select>
+          </label>
+          <label>
+            <span class="label">Preset Name</span>
+            <input id="site-preset-name" type="text" placeholder="Workshop roof" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="load-site-preset">Load Site Preset</button>
+          <button type="button" id="save-site-preset">Save Site Preset</button>
+          <button type="button" id="delete-site-preset">Delete Site Preset</button>
+        </div>
         <p class="note">This updates the solar calculation position on the remote. Altitude is still not used.</p>
       </section>
 
@@ -140,6 +157,23 @@
         <div class="button-row">
           <button type="button" id="move-approx-target">Move To Approx Direction</button>
           <button type="button" id="load-approx-target">Use Approx Position</button>
+        </div>
+        <div class="preset-grid">
+          <label>
+            <span class="label">Beam Preset</span>
+            <select id="beam-preset-select">
+              <option value="">No preset</option>
+            </select>
+          </label>
+          <label>
+            <span class="label">Preset Name</span>
+            <input id="beam-preset-name" type="text" placeholder="South facade" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="load-beam-preset">Load Beam Preset</button>
+          <button type="button" id="save-beam-preset">Save Beam Preset</button>
+          <button type="button" id="delete-beam-preset">Delete Beam Preset</button>
         </div>
         <p class="note">This computes an approximate mirror orientation from the current sun position, then you can start a scan from that area.</p>
       </section>

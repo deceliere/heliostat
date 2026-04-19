@@ -13,6 +13,8 @@ import paho.mqtt.client as mqtt
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
+DATA_DIR = BASE_DIR / "data"
+PRESETS_PATH = DATA_DIR / "presets.json"
 MQTT_HOST = os.getenv("HELIOSTAT_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.getenv("HELIOSTAT_MQTT_PORT", "1883"))
 MQTT_BASE_TOPIC = os.getenv("HELIOSTAT_MQTT_BASE_TOPIC", "heliostat/remote1")
@@ -64,6 +66,8 @@ runtime_state = {
     "last_diag": None,
 }
 
+PRESET_GROUPS = {"site_locations", "beam_directions"}
+
 
 def set_state(**kwargs) -> None:
     with state_lock:
@@ -77,6 +81,67 @@ def get_state() -> dict:
 
 def topic(suffix: str) -> str:
     return f"{MQTT_BASE_TOPIC}/{suffix}"
+
+
+def default_presets() -> dict:
+    return {
+        "site_locations": [],
+        "beam_directions": [],
+    }
+
+
+def load_presets() -> dict:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not PRESETS_PATH.exists():
+        presets = default_presets()
+        PRESETS_PATH.write_text(json.dumps(presets, indent=2) + "\n", encoding="utf-8")
+        return presets
+
+    try:
+        loaded = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        loaded = {}
+
+    presets = default_presets()
+    if isinstance(loaded, dict):
+        for key in PRESET_GROUPS:
+            values = loaded.get(key, [])
+            if isinstance(values, list):
+                presets[key] = values
+    return presets
+
+
+def save_presets(presets: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PRESETS_PATH.write_text(json.dumps(presets, indent=2) + "\n", encoding="utf-8")
+
+
+def normalize_name(name: str) -> str:
+    normalized = str(name).strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="name is required")
+    return normalized
+
+
+def upsert_preset(group: str, preset: dict) -> dict:
+    if group not in PRESET_GROUPS:
+        raise HTTPException(status_code=400, detail="invalid preset group")
+    presets = load_presets()
+    items = [item for item in presets[group] if item.get("name") != preset["name"]]
+    items.append(preset)
+    items.sort(key=lambda item: item.get("name", "").lower())
+    presets[group] = items
+    save_presets(presets)
+    return presets
+
+
+def delete_preset(group: str, name: str) -> dict:
+    if group not in PRESET_GROUPS:
+        raise HTTPException(status_code=400, detail="invalid preset group")
+    presets = load_presets()
+    presets[group] = [item for item in presets[group] if item.get("name") != name]
+    save_presets(presets)
+    return presets
 
 
 def mqtt_reason_code_is_success(reason_code) -> bool:
@@ -199,6 +264,45 @@ def api_health() -> dict:
 @app.get("/api/state")
 def api_state() -> dict:
     return get_state()
+
+
+@app.get("/api/presets")
+def api_presets() -> dict:
+    return load_presets()
+
+
+@app.post("/api/presets/site")
+def api_preset_site(payload: dict) -> dict:
+    preset = {
+        "name": normalize_name(payload.get("name", "")),
+        "latitude_deg": float(payload.get("latitude_deg")),
+        "longitude_deg": float(payload.get("longitude_deg")),
+    }
+    presets = upsert_preset("site_locations", preset)
+    return {"ok": True, "presets": presets, "preset": preset}
+
+
+@app.post("/api/presets/site/delete")
+def api_preset_site_delete(payload: dict) -> dict:
+    presets = delete_preset("site_locations", normalize_name(payload.get("name", "")))
+    return {"ok": True, "presets": presets}
+
+
+@app.post("/api/presets/beam")
+def api_preset_beam(payload: dict) -> dict:
+    preset = {
+        "name": normalize_name(payload.get("name", "")),
+        "bearing_deg": float(payload.get("bearing_deg")),
+        "elevation_deg": float(payload.get("elevation_deg")),
+    }
+    presets = upsert_preset("beam_directions", preset)
+    return {"ok": True, "presets": presets, "preset": preset}
+
+
+@app.post("/api/presets/beam/delete")
+def api_preset_beam_delete(payload: dict) -> dict:
+    presets = delete_preset("beam_directions", normalize_name(payload.get("name", "")))
+    return {"ok": True, "presets": presets}
 
 
 @app.post("/api/cmd/mode")
