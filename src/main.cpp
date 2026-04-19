@@ -256,6 +256,8 @@ int st3020PanFeedbackPosition = -1;
 int st3020TiltFeedbackPosition = -1;
 int st3020PanVoltageTenths = -1;
 int st3020TiltVoltageTenths = -1;
+int st3020LastCommandedPanPosition = -1;
+int st3020LastCommandedTiltPosition = -1;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
 #endif
@@ -874,8 +876,13 @@ float st3020TiltAngleDegFromPosition(int position) {
 void setSt3020TorqueEnabled(bool enabled) {
   const int panResult = st3020Bus.EnableTorque(ST3020_PAN_ID, enabled ? 1 : 0);
   const int tiltResult = st3020Bus.EnableTorque(ST3020_TILT_ID, enabled ? 1 : 0);
-  st3020TorqueEnabled = enabled;
-  Serial.printf("ST3020 torque %s: pan=%d tilt=%d\n", enabled ? "on" : "off", panResult, tiltResult);
+  const int panReadback = st3020Bus.readByte(ST3020_PAN_ID, SMS_STS_TORQUE_ENABLE);
+  const int tiltReadback = st3020Bus.readByte(ST3020_TILT_ID, SMS_STS_TORQUE_ENABLE);
+  st3020TorqueEnabled = (panReadback == 1) || (tiltReadback == 1);
+  Serial.printf("ST3020 torque %s: pan_wr=%d pan_rb=%d | tilt_wr=%d tilt_rb=%d\n",
+                enabled ? "on" : "off",
+                panResult, panReadback,
+                tiltResult, tiltReadback);
 }
 
 void updateSt3020Feedback(bool force = false) {
@@ -935,18 +942,24 @@ void beginRemoteActuatorsSt3020() {
 }
 
 void writeRemoteActuatorsSt3020() {
+  const int panPosition = st3020PanPositionFromAngleDeg(panTargetDeg);
+  const int tiltPosition = st3020TiltPositionFromAngleDeg(tiltTargetDeg);
+  lastPanPulseUs = panPosition;
+  lastTiltPulseUs = tiltPosition;
+  if (panPosition == st3020LastCommandedPanPosition &&
+      tiltPosition == st3020LastCommandedTiltPosition) {
+    return;
+  }
   if (!st3020TorqueEnabled) {
     setSt3020TorqueEnabled(true);
   }
-  const int panPosition = st3020PanPositionFromAngleDeg(panAngleDeg);
-  const int tiltPosition = st3020TiltPositionFromAngleDeg(tiltAngleDeg);
-  lastPanPulseUs = panPosition;
-  lastTiltPulseUs = tiltPosition;
   lastSt3020MotionCommandMs = millis();
   const int panResult =
       st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
   const int tiltResult =
       st3020Bus.WritePosEx(ST3020_TILT_ID, static_cast<s16>(tiltPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
+  st3020LastCommandedPanPosition = panPosition;
+  st3020LastCommandedTiltPosition = tiltPosition;
   static uint32_t lastSt3020LogMs = 0;
   const uint32_t nowMs = millis();
   if ((nowMs - lastSt3020LogMs) >= 1000) {
@@ -1726,6 +1739,7 @@ void updateScanState(uint32_t nowMs) {
 
 void moveServosTowardTargets(uint32_t nowMs) {
   static uint32_t lastServoUpdateMs = 0;
+  static uint32_t lastSt3020TorqueDiagMs = 0;
   if (lastServoUpdateMs == 0) {
     lastServoUpdateMs = nowMs;
   }
@@ -1739,19 +1753,22 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
     updateSt3020Feedback();
-  }
-
-  const float slewSpeedDegPerSec = scanActive ? scanMoveSpeedDegPerSec : SERVO_MAX_SLEW_DEG_PER_SEC;
-  const float maxStep = slewSpeedDegPerSec * (static_cast<float>(elapsedMs) / 1000.0f);
-
-  panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);
-  tiltAngleDeg = stepToward(tiltAngleDeg, tiltTargetDeg, maxStep);
-  const bool onTarget =
-      fabsf(panAngleDeg - panTargetDeg) <= SCAN_SETTLE_TOLERANCE_DEG &&
-      fabsf(tiltAngleDeg - tiltTargetDeg) <= SCAN_SETTLE_TOLERANCE_DEG;
-
-  if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
-    if (!onTarget || ST3020_HOLD_TORQUE_ENABLED) {
+    const float panErrorDeg = panAngleDeg - panTargetDeg;
+    const float tiltErrorDeg = tiltAngleDeg - tiltTargetDeg;
+    const bool onTarget =
+        fabsf(panErrorDeg) <= SCAN_SETTLE_TOLERANCE_DEG &&
+        fabsf(tiltErrorDeg) <= SCAN_SETTLE_TOLERANCE_DEG;
+    if ((nowMs - lastSt3020TorqueDiagMs) >= 1000) {
+      lastSt3020TorqueDiagMs = nowMs;
+      Serial.printf(
+          "ST3020 settle: pan_err=%+.3f tilt_err=%+.3f on_target=%s torque=%s idle_ms=%lu\n",
+          panErrorDeg,
+          tiltErrorDeg,
+          onTarget ? "yes" : "no",
+          st3020TorqueEnabled ? "on" : "off",
+          static_cast<unsigned long>(nowMs - lastSt3020MotionCommandMs));
+    }
+    if (!onTarget || st3020LastCommandedPanPosition < 0 || st3020LastCommandedTiltPosition < 0) {
       writeRemoteActuators();
     } else if (st3020TorqueEnabled &&
                (nowMs - lastSt3020MotionCommandMs) >= ST3020_TORQUE_RELEASE_IDLE_MS) {
@@ -1759,6 +1776,12 @@ void moveServosTowardTargets(uint32_t nowMs) {
     }
     return;
   }
+
+  const float slewSpeedDegPerSec = scanActive ? scanMoveSpeedDegPerSec : SERVO_MAX_SLEW_DEG_PER_SEC;
+  const float maxStep = slewSpeedDegPerSec * (static_cast<float>(elapsedMs) / 1000.0f);
+
+  panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);
+  tiltAngleDeg = stepToward(tiltAngleDeg, tiltTargetDeg, maxStep);
 
   writeRemoteActuators();
 }
