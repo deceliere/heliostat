@@ -31,8 +31,8 @@ namespace {
 #error "Define DEVICE_ROLE_CONTROLLER or DEVICE_ROLE_REMOTE in platformio.ini"
 #endif
 
-constexpr bool STATUS_LED_ENABLED = false;
-constexpr int STATUS_LED_PIN = 38;
+constexpr bool STATUS_LED_ENABLED = true;
+constexpr int STATUS_LED_PIN = 23;
 constexpr int STATUS_LED_COUNT = 1;
 constexpr uint8_t LED_BRIGHTNESS = 32;
 
@@ -57,7 +57,7 @@ constexpr float SERVO_MAX_SLEW_DEG_PER_SEC = 500.0f;
 constexpr uint32_t CONTROL_UPDATE_MS = 5;
 constexpr uint32_t STATUS_PRINT_MS = 2000;
 constexpr uint32_t CONTROL_LINK_TIMEOUT_MS = 250;
-constexpr bool ENABLE_RUNTIME_STATUS_LOGS = true;
+constexpr bool ENABLE_RUNTIME_STATUS_LOGS = false;
 constexpr bool WAIT_FOR_SERIAL = false;
 constexpr uint32_t WAIT_FOR_SERIAL_TIMEOUT_MS = 15000;
 constexpr bool CLEAR_XBOX_BONDS_ON_BOOT = true;
@@ -87,7 +87,7 @@ constexpr uint8_t ST3020_DEFAULT_ACC = 50;
 constexpr bool ST3020_HOLD_TORQUE_ENABLED = true;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
 constexpr uint32_t ST3020_TORQUE_RELEASE_IDLE_MS = 250;
-constexpr float ST3020_PAN_SIGN = -1.0f;
+constexpr float ST3020_PAN_SIGN = 1.0f;
 constexpr float ST3020_TILT_SIGN = -1.0f;
 constexpr int ST3020_POS_AT_0_DEG = 1024;
 constexpr int ST3020_POS_AT_90_DEG = 2048;
@@ -342,6 +342,8 @@ float approxTargetBearingDeg = 180.0f;
 float approxTargetElevationDeg = 0.0f;
 float approxTargetPanDeg = PAN_START_DEG;
 float approxTargetTiltDeg = TILT_START_DEG;
+char serialCommandBuffer[SERIAL_COMMAND_BUFFER_SIZE] = {};
+size_t serialCommandLength = 0;
 
 #if defined(DEVICE_ROLE_CONTROLLER)
 uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
@@ -349,8 +351,6 @@ uint8_t pendingAutoPairMac[6] = {0, 0, 0, 0, 0, 0};
 bool lastCaptureButton = false;
 bool lastAutoButton = false;
 bool lastDiagButton = false;
-char serialCommandBuffer[SERIAL_COMMAND_BUFFER_SIZE] = {};
-size_t serialCommandLength = 0;
 float remoteReportedPanAngleDeg = PAN_START_DEG;
 float remoteReportedTiltAngleDeg = TILT_START_DEG;
 float remoteReportedPanTargetDeg = PAN_START_DEG;
@@ -1776,14 +1776,7 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
     updateSt3020Feedback();
-    const float panErrorDeg = panAngleDeg - panTargetDeg;
-    const float tiltErrorDeg = tiltAngleDeg - tiltTargetDeg;
-    const bool onTarget =
-        fabsf(panErrorDeg) <= SCAN_SETTLE_TOLERANCE_DEG &&
-        fabsf(tiltErrorDeg) <= SCAN_SETTLE_TOLERANCE_DEG;
-    if (!onTarget || st3020LastCommandedPanPosition < 0 || st3020LastCommandedTiltPosition < 0) {
-      writeRemoteActuators();
-    }
+    writeRemoteActuators();
     return;
   }
 
@@ -1932,7 +1925,127 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
   lastRxMs = millis();
 }
 
+#endif
+
 void handleSerialCommandLine(const char* line) {
+  while (*line == ' ' || *line == '\t') {
+    ++line;
+  }
+  String normalized(line);
+  normalized.trim();
+  line = normalized.c_str();
+
+#if defined(DEVICE_ROLE_REMOTE)
+  if (strcmp(line, "POS?") == 0 || strcmp(line, "pos?") == 0 ||
+      strcmp(line, "POS") == 0 || strcmp(line, "pos") == 0 ||
+      strcmp(line, "STATE?") == 0 || strcmp(line, "state?") == 0) {
+    updateSt3020Feedback(true);
+    Serial.printf(
+        "REMOTE_POS | pan_deg=%.3f pan_target_deg=%.3f pan_target_pos=%d pan_feedback_pos=%d | tilt_deg=%.3f tilt_target_deg=%.3f tilt_target_pos=%d tilt_feedback_pos=%d\n",
+        panAngleDeg,
+        panTargetDeg,
+        st3020PanPositionFromAngleDeg(panTargetDeg),
+        st3020PanFeedbackPosition,
+        tiltExternalFromInternalDeg(tiltAngleDeg),
+        tiltExternalFromInternalDeg(tiltTargetDeg),
+        st3020TiltPositionFromAngleDeg(tiltTargetDeg),
+        st3020TiltFeedbackPosition);
+    return;
+  }
+
+  if (strcmp(line, "CAL?") == 0 || strcmp(line, "cal?") == 0) {
+    Serial.printf(
+        "REMOTE_CAL | pan_model_sign=%+.0f pan_servo_sign=%+.0f pan_start=%.1f | tilt_model_sign=%+.0f tilt_servo_sign=%+.0f tilt_start_internal=%.1f tilt_start_external=%.1f\n",
+        PAN_MODEL_SIGN,
+        ST3020_PAN_SIGN,
+        PAN_START_DEG,
+        TILT_MODEL_SIGN,
+        ST3020_TILT_SIGN,
+        TILT_START_DEG,
+        tiltExternalFromInternalDeg(TILT_START_DEG));
+    return;
+  }
+
+  if (strncmp(line, "PAN=", 4) == 0 || strncmp(line, "pan=", 4) == 0) {
+    const float parsed = atof(line + 4);
+    stopScan();
+    autoTrackEnabled = false;
+    controlMode = CONTROL_MODE_MANUAL;
+    remotePanInput = 0.0f;
+    remoteTiltInput = 0.0f;
+    precisionManualMode = false;
+    panTargetDeg = constrain(parsed, panMinLimitDeg(), panMaxLimitDeg());
+    if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+      panTargetDeg = quantizeSt3020PanTargetDeg(panTargetDeg);
+    }
+    Serial.printf("PAN target set: %.3f\n", panTargetDeg);
+    return;
+  }
+
+  if (strncmp(line, "TILT=", 5) == 0 || strncmp(line, "tilt=", 5) == 0) {
+    const float parsed = atof(line + 5);
+    stopScan();
+    autoTrackEnabled = false;
+    controlMode = CONTROL_MODE_MANUAL;
+    remotePanInput = 0.0f;
+    remoteTiltInput = 0.0f;
+    precisionManualMode = false;
+    tiltTargetDeg = constrain(
+        tiltInternalFromExternalDeg(parsed),
+        tiltMinLimitDeg(),
+        tiltMaxLimitDeg());
+    if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+      tiltTargetDeg = quantizeSt3020TiltTargetDeg(tiltTargetDeg);
+    }
+    Serial.printf("TILT target set: %.3f\n", tiltExternalFromInternalDeg(tiltTargetDeg));
+    return;
+  }
+
+  if (strncmp(line, "JP=", 3) == 0 || strncmp(line, "jp=", 3) == 0) {
+    const float parsed = atof(line + 3);
+    stopScan();
+    autoTrackEnabled = false;
+    controlMode = CONTROL_MODE_MANUAL;
+    remotePanInput = 0.0f;
+    remoteTiltInput = 0.0f;
+    precisionManualMode = false;
+    panTargetDeg = constrain(panTargetDeg + parsed, panMinLimitDeg(), panMaxLimitDeg());
+    if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+      panTargetDeg = quantizeSt3020PanTargetDeg(panTargetDeg);
+    }
+    Serial.printf("PAN jog target: %.3f\n", panTargetDeg);
+    return;
+  }
+
+  if (strncmp(line, "JT=", 3) == 0 || strncmp(line, "jt=", 3) == 0) {
+    const float parsed = atof(line + 3);
+    stopScan();
+    autoTrackEnabled = false;
+    controlMode = CONTROL_MODE_MANUAL;
+    remotePanInput = 0.0f;
+    remoteTiltInput = 0.0f;
+    precisionManualMode = false;
+    tiltTargetDeg = constrain(tiltTargetDeg + parsed, tiltMinLimitDeg(), tiltMaxLimitDeg());
+    if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+      tiltTargetDeg = quantizeSt3020TiltTargetDeg(tiltTargetDeg);
+    }
+    Serial.printf("TILT jog target: %.3f\n", tiltExternalFromInternalDeg(tiltTargetDeg));
+    return;
+  }
+
+  if (strcmp(line, "HELP") == 0 || strcmp(line, "help") == 0) {
+    Serial.println("Serial commands:");
+    Serial.println("  POS? / POS            show target/feedback degrees and positions");
+    Serial.println("  CAL?                  show model/servo sign configuration");
+    Serial.println("  PAN=<deg>             set pan target directly");
+    Serial.println("  TILT=<deg>            set public tilt target directly");
+    Serial.println("  JP=<delta_deg>        jog pan target by delta");
+    Serial.println("  JT=<delta_deg>        jog tilt target by delta (internal sign)");
+    return;
+  }
+#endif
+
+#if defined(DEVICE_ROLE_CONTROLLER)
   if (strncmp(line, "T=", 2) == 0 || strncmp(line, "t=", 2) == 0) {
     const long long parsed = atoll(line + 2);
     if (parsed > 0) {
@@ -1970,19 +2083,29 @@ void handleSerialCommandLine(const char* line) {
 
   if (strcmp(line, "HELP") == 0 || strcmp(line, "help") == 0) {
     Serial.println("Serial commands:");
+#if defined(DEVICE_ROLE_REMOTE)
+    Serial.println("  POS?                  show target/feedback degrees and positions");
+    Serial.println("  CAL?                  show model/servo sign configuration");
+    Serial.println("  PAN=<deg>             set pan target directly");
+    Serial.println("  TILT=<deg>            set public tilt target directly");
+    Serial.println("  JP=<delta_deg>        jog pan target by delta");
+    Serial.println("  JT=<delta_deg>        jog tilt target by delta (internal sign)");
+#else
     Serial.println("  T=<unix_utc_seconds>  set UTC time");
     Serial.println("  S=<scale>             set heliostat time scale");
     Serial.println("  TIME?                 show current UTC time");
     Serial.println("  SCALE?                show current time scale");
+#endif
     return;
   }
+#endif
 
   if (line[0] != '\0') {
     Serial.printf("Unknown serial command: %s\n", line);
   }
 }
 
-void handleControllerSerial() {
+void handleSerialInput() {
   while (Serial.available() > 0) {
     const char ch = static_cast<char>(Serial.read());
     if (ch == '\r') {
@@ -2003,6 +2126,7 @@ void handleControllerSerial() {
   }
 }
 
+#if defined(DEVICE_ROLE_CONTROLLER)
 void printTrackingDiagnostic() {
   const double driftSeconds =
       (remoteReportedUnixTimeUtc > 0 && remoteReportedAutoTrackStartUnixTimeUtc > 0)
@@ -2216,7 +2340,7 @@ void printStatus(uint32_t nowMs) {
         autoTrackEnabled ? "on" : "off",
         controlModeName(remoteReportedControlMode),
         remoteReportedPanAngleDeg,
-        remoteReportedTiltAngleDeg,
+        tiltExternalFromInternalDeg(remoteReportedTiltAngleDeg),
         remoteReportedPanTargetDeg - remoteReportedCapturedPanAngleDeg,
         remoteReportedTiltTargetDeg - remoteReportedCapturedTiltAngleDeg,
         remoteReportedTargetDirectionValid ? "ok" : "missing",
@@ -2234,7 +2358,8 @@ void printStatus(uint32_t nowMs) {
       ntpTimeValid ? "ok" : "down",
       packetReceived ? "ok" : "waiting",
       static_cast<unsigned long>(ageMs),
-      panAngleDeg, tiltAngleDeg, panTargetDeg, tiltTargetDeg,
+      panAngleDeg, tiltExternalFromInternalDeg(tiltAngleDeg),
+      panTargetDeg, tiltExternalFromInternalDeg(tiltTargetDeg),
       lastPanPulseUs, lastTiltPulseUs,
       static_cast<float>(st3020PanVoltageTenths) / 10.0f,
       static_cast<float>(st3020TiltVoltageTenths) / 10.0f,
@@ -2341,11 +2466,12 @@ void setup() {
 void loop() {
   const uint32_t nowMs = millis();
 #if defined(DEVICE_ROLE_CONTROLLER)
-  handleControllerSerial();
+  handleSerialInput();
   serviceControllerDeferredActions(nowMs);
 #endif
   updateLedFromXbox(nowMs);
 #if defined(DEVICE_ROLE_REMOTE)
+  handleSerialInput();
   ensureRemoteWifiConnected(nowMs);
   ensureRemoteNtpTime(nowMs);
   ensureRemoteMqttConnected(nowMs);
