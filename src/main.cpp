@@ -39,7 +39,7 @@ constexpr uint8_t LED_BRIGHTNESS = 32;
 constexpr float PAN_MIN_DEG = 0.0f;
 constexpr float PAN_MAX_DEG = 180.0f;
 constexpr float PAN_START_DEG = 90.0f;
-constexpr float PAN_MODEL_SIGN = -1.0f;
+constexpr float PAN_MODEL_SIGN = 1.0f;
 
 constexpr float TILT_MIN_DEG = 0.0f;
 constexpr float TILT_MAX_DEG = 180.0f;
@@ -442,6 +442,11 @@ Vec3 normalizeVec3(const Vec3& v) {
   return scaleVec3(v, 1.0f / length);
 }
 
+float panMinLimitDeg();
+float panMaxLimitDeg();
+float tiltMinLimitDeg();
+float tiltMaxLimitDeg();
+
 Vec3 reflectVector(const Vec3& incoming, const Vec3& normal) {
   return addVec3(incoming, scaleVec3(normal, -2.0f * dotVec3(incoming, normal)));
 }
@@ -449,7 +454,7 @@ Vec3 reflectVector(const Vec3& incoming, const Vec3& normal) {
 Vec3 mirrorNormalFromPanTilt(float panDeg, float tiltDeg) {
   const float panAzimuthDeg = (PAN_MODEL_SIGN * (panDeg - 90.0f)) + 180.0f;
   const float panRad = degToRad(panAzimuthDeg);
-  const float tiltRad = degToRad(TILT_MODEL_SIGN * (tiltDeg - 90.0f));
+  const float tiltRad = degToRad(TILT_MODEL_SIGN * (tiltDeg - TILT_START_DEG));
   const float cosTilt = cosf(tiltRad);
   return normalizeVec3({
       cosTilt * cosf(panRad),
@@ -466,8 +471,8 @@ void panTiltFromMirrorNormal(const Vec3& normal, float& panDeg, float& tiltDeg) 
   }
   const float panModelDeg = 90.0f + (PAN_MODEL_SIGN * (panAzimuthDeg - 180.0f));
   panDeg = constrain(panModelDeg, PAN_MIN_DEG, PAN_MAX_DEG);
-  const float tiltModelDeg = 90.0f + (TILT_MODEL_SIGN * radToDeg(asinf(normalized.z)));
-  tiltDeg = constrain(tiltModelDeg, TILT_MIN_DEG, TILT_MAX_DEG);
+  const float tiltModelDeg = TILT_START_DEG + (TILT_MODEL_SIGN * radToDeg(asinf(normalized.z)));
+  tiltDeg = constrain(tiltModelDeg, tiltMinLimitDeg(), tiltMaxLimitDeg());
 }
 
 bool currentUnixTimeUtc(time_t& unixTimeUtc) {
@@ -552,6 +557,15 @@ Vec3 vectorFromBearingElevation(float bearingDeg, float elevationDeg) {
       cosElevation * sinf(bearingRad),
       sinf(elevationRad),
   });
+}
+
+void bearingElevationFromVector(const Vec3& v, float& bearingDeg, float& elevationDeg) {
+  const Vec3 normalized = normalizeVec3(v);
+  bearingDeg = radToDeg(atan2f(normalized.y, normalized.x));
+  if (bearingDeg < 0.0f) {
+    bearingDeg += 360.0f;
+  }
+  elevationDeg = radToDeg(asinf(normalized.z));
 }
 
 int angleToPulseUs(float angleDeg, float minDeg, float maxDeg, int minPulseUs, int maxPulseUs) {
@@ -1966,6 +1980,80 @@ void handleSerialCommandLine(const char* line) {
     return;
   }
 
+  if (strcmp(line, "SUN?") == 0 || strcmp(line, "sun?") == 0) {
+    time_t unixTimeUtc = 0;
+    if (!currentUnixTimeUtc(unixTimeUtc)) {
+      Serial.println("SUN: time unavailable");
+      return;
+    }
+    const Vec3 sunDirection = sunVectorFromUnixTime(unixTimeUtc);
+    float sunBearingDeg = 0.0f;
+    float sunElevationDeg = 0.0f;
+    bearingElevationFromVector(sunDirection, sunBearingDeg, sunElevationDeg);
+    Serial.printf(
+        "SUN | utc=%lld | bearing=%.3f elevation=%.3f | vec=(%.4f, %.4f, %.4f)\n",
+        static_cast<long long>(unixTimeUtc),
+        sunBearingDeg,
+        sunElevationDeg,
+        sunDirection.x,
+        sunDirection.y,
+        sunDirection.z);
+    return;
+  }
+
+  if (strcmp(line, "AUTO?") == 0 || strcmp(line, "auto?") == 0) {
+    time_t unixTimeUtc = 0;
+    if (!currentUnixTimeUtc(unixTimeUtc)) {
+      Serial.println("AUTO: time unavailable");
+      return;
+    }
+    const Vec3 sunDirection = sunVectorFromUnixTime(unixTimeUtc);
+    const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+
+    float sunBearingDeg = 0.0f;
+    float sunElevationDeg = 0.0f;
+    float currentNormalBearingDeg = 0.0f;
+    float currentNormalElevationDeg = 0.0f;
+    bearingElevationFromVector(sunDirection, sunBearingDeg, sunElevationDeg);
+    bearingElevationFromVector(currentNormal, currentNormalBearingDeg, currentNormalElevationDeg);
+
+    Serial.printf(
+        "AUTO | mode=%s | pan=%.3f tilt=%.3f | normal_bearing=%.3f normal_elevation=%.3f | sun_bearing=%.3f sun_elevation=%.3f | target_valid=%s\n",
+        controlModeName(controlMode),
+        panAngleDeg,
+        tiltExternalFromInternalDeg(tiltAngleDeg),
+        currentNormalBearingDeg,
+        currentNormalElevationDeg,
+        sunBearingDeg,
+        sunElevationDeg,
+        targetDirectionValid ? "yes" : "no");
+
+    if (targetDirectionValid) {
+      float targetBearingDeg = 0.0f;
+      float targetElevationDeg = 0.0f;
+      bearingElevationFromVector(targetDirection, targetBearingDeg, targetElevationDeg);
+      Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
+      if (lengthVec3(desiredNormal) > 0.0f && dotVec3(currentNormal, desiredNormal) < 0.0f) {
+        desiredNormal = scaleVec3(desiredNormal, -1.0f);
+      }
+      float desiredNormalBearingDeg = 0.0f;
+      float desiredNormalElevationDeg = 0.0f;
+      float predictedPanDeg = 0.0f;
+      float predictedTiltDeg = 0.0f;
+      bearingElevationFromVector(desiredNormal, desiredNormalBearingDeg, desiredNormalElevationDeg);
+      panTiltFromMirrorNormal(desiredNormal, predictedPanDeg, predictedTiltDeg);
+      Serial.printf(
+          "AUTO | target_bearing=%.3f target_elevation=%.3f | desired_normal_bearing=%.3f desired_normal_elevation=%.3f | predicted_pan=%.3f predicted_tilt=%.3f\n",
+          targetBearingDeg,
+          targetElevationDeg,
+          desiredNormalBearingDeg,
+          desiredNormalElevationDeg,
+          predictedPanDeg,
+          tiltExternalFromInternalDeg(predictedTiltDeg));
+    }
+    return;
+  }
+
   if (strncmp(line, "PAN=", 4) == 0 || strncmp(line, "pan=", 4) == 0) {
     const float parsed = atof(line + 4);
     stopScan();
@@ -2037,6 +2125,8 @@ void handleSerialCommandLine(const char* line) {
     Serial.println("Serial commands:");
     Serial.println("  POS? / POS            show target/feedback degrees and positions");
     Serial.println("  CAL?                  show model/servo sign configuration");
+    Serial.println("  SUN?                  show computed sun bearing/elevation");
+    Serial.println("  AUTO?                 show auto-track geometry diagnostics");
     Serial.println("  PAN=<deg>             set pan target directly");
     Serial.println("  TILT=<deg>            set public tilt target directly");
     Serial.println("  JP=<delta_deg>        jog pan target by delta");
