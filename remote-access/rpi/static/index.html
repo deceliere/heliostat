@@ -278,6 +278,10 @@
             <span class="label">Tracking Error</span>
             <span id="drift-error" class="status-pill">Unknown</span>
           </div>
+          <div>
+            <span class="label">Drift Baseline</span>
+            <span id="drift-baseline" class="status-pill">Not armed</span>
+          </div>
         </div>
         <div class="manual-grid">
           <label>
@@ -285,19 +289,12 @@
             <input id="drift-label" type="text" placeholder="Morning run" />
           </label>
           <label>
-            <span class="label">Pan Correction Applied</span>
-            <input id="drift-pan-correction" type="number" step="0.01" placeholder="-0.30" />
-          </label>
-          <label>
-            <span class="label">Tilt Correction Applied</span>
-            <input id="drift-tilt-correction" type="number" step="0.01" placeholder="0.05" />
-          </label>
-          <label>
             <span class="label">Note</span>
             <input id="drift-note" type="text" placeholder="Drifted left after 15 min" />
           </label>
         </div>
         <div class="button-row">
+          <button type="button" id="arm-drift-baseline">Arm Drift Baseline</button>
           <button type="button" id="record-drift-sample">Record Drift Sample</button>
           <button type="button" id="export-drift-samples">Export JSON</button>
           <button type="button" id="clear-drift-samples">Clear Samples</button>
@@ -326,6 +323,25 @@
 
       <section class="state-card">
         <h2>Last State</h2>
+        <div class="state-summary-grid">
+          <div>
+            <span class="label">Actual Pan / Tilt</span>
+            <div class="state-summary-value" id="state-actual">—</div>
+          </div>
+          <div>
+            <span class="label">Target Pan / Tilt</span>
+            <div class="state-summary-value" id="state-target">—</div>
+          </div>
+          <div>
+            <span class="label">Predicted Pan / Tilt</span>
+            <div class="state-summary-value" id="state-predicted">—</div>
+          </div>
+          <div>
+            <span class="label">Tracking Error</span>
+            <div class="state-summary-value" id="state-error">—</div>
+          </div>
+        </div>
+        <span class="label">Raw State JSON</span>
         <pre id="state-output">Loading…</pre>
       </section>
     </main>

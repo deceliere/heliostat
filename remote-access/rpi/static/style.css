@@ -211,6 +211,24 @@ h2 {
   border-bottom: none;
 }
 
+.state-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.state-summary-value {
+  min-height: 48px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .step-row {
   display: flex;
   flex-wrap: wrap;

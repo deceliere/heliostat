@@ -52,6 +52,7 @@ let activeJogKey = null;
 let latestState = {};
 let latestPresets = { site_locations: [], beam_directions: [] };
 let latestDriftSamples = [];
+let driftBaseline = null;
 let scanSpeedSlider = null;
 let scanDwellSlider = null;
 
@@ -126,6 +127,13 @@ function formatAnglePair(a, b, suffix = "°") {
   return `${a.toFixed(2)} / ${b.toFixed(2)}${suffix}`;
 }
 
+function formatAngleValue(value, suffix = "°") {
+  if (typeof value !== "number") {
+    return "—";
+  }
+  return `${value.toFixed(2)}${suffix}`;
+}
+
 function renderDriftSamples() {
   const body = document.getElementById("drift-samples-body");
   if (!body) {
@@ -168,6 +176,38 @@ function renderDriftSamples() {
       </tr>`;
     })
     .join("");
+}
+
+function snapshotDriftBaseline() {
+  if (typeof latestState.pan_deg !== "number" || typeof latestState.tilt_deg !== "number") {
+    return null;
+  }
+
+  return {
+    timestamp_unix_ms: Date.now(),
+    mode: latestState.mode ?? "unknown",
+    pan_deg: latestState.pan_deg,
+    tilt_deg: latestState.tilt_deg,
+    pan_target_deg: latestState.pan_target_deg,
+    tilt_target_deg: latestState.tilt_target_deg,
+    sun_bearing_deg: latestState.sun_bearing_deg,
+    sun_elevation_deg: latestState.sun_elevation_deg,
+    predicted_pan_deg: latestState.predicted_pan_deg,
+    predicted_tilt_deg: latestState.predicted_tilt_deg,
+  };
+}
+
+function updateDriftBaselinePill() {
+  if (!driftBaseline) {
+    setStatusPill("drift-baseline", "Not armed", "amber");
+    return;
+  }
+
+  setStatusPill(
+    "drift-baseline",
+    `${formatUnixMs(driftBaseline.timestamp_unix_ms)} | ${driftBaseline.pan_deg.toFixed(2)} / ${driftBaseline.tilt_deg.toFixed(2)}`,
+    "slate"
+  );
 }
 
 function readAbsoluteTargets() {
@@ -383,6 +423,7 @@ function bindControlButtons() {
   const resumeBackwardScanButton = document.getElementById("resume-backward-scan");
   const resumeForwardScanButton = document.getElementById("resume-forward-scan");
   const useScanLockButton = document.getElementById("use-scan-lock");
+  const armDriftBaselineButton = document.getElementById("arm-drift-baseline");
   const recordDriftSampleButton = document.getElementById("record-drift-sample");
   const exportDriftSamplesButton = document.getElementById("export-drift-samples");
   const clearDriftSamplesButton = document.getElementById("clear-drift-samples");
@@ -426,6 +467,8 @@ function bindControlButtons() {
 
   manualButton?.addEventListener("click", async () => {
     await stopJogging();
+    driftBaseline = snapshotDriftBaseline();
+    updateDriftBaselinePill();
     await postJson("/api/cmd/mode", { mode: "manual" });
     await refreshUi();
   });
@@ -631,12 +674,29 @@ function bindControlButtons() {
     await refreshUi();
   });
 
+  armDriftBaselineButton?.addEventListener("click", async () => {
+    driftBaseline = snapshotDriftBaseline();
+    updateDriftBaselinePill();
+  });
+
   recordDriftSampleButton?.addEventListener("click", async () => {
+    if (!driftBaseline) {
+      driftBaseline = snapshotDriftBaseline();
+      updateDriftBaselinePill();
+      return;
+    }
+
+    const panCorrectionDeg =
+      typeof latestState.pan_deg === "number" ? latestState.pan_deg - driftBaseline.pan_deg : null;
+    const tiltCorrectionDeg =
+      typeof latestState.tilt_deg === "number" ? latestState.tilt_deg - driftBaseline.tilt_deg : null;
+
     const payload = {
       label: document.getElementById("drift-label")?.value ?? "",
-      pan_correction_deg: Number(document.getElementById("drift-pan-correction")?.value ?? ""),
-      tilt_correction_deg: Number(document.getElementById("drift-tilt-correction")?.value ?? ""),
+      pan_correction_deg: panCorrectionDeg,
+      tilt_correction_deg: tiltCorrectionDeg,
       note: document.getElementById("drift-note")?.value ?? "",
+      baseline: driftBaseline,
       state: latestState,
     };
     if (!Number.isFinite(payload.pan_correction_deg)) {
@@ -793,10 +853,19 @@ async function refreshUi() {
         ? "green"
         : "amber";
     setStatusPill("drift-error", formatAnglePair(state.pan_tracking_error_deg, state.tilt_tracking_error_deg), typeof state.pan_tracking_error_deg === "number" ? errorTone : "amber");
+    updateDriftBaselinePill();
 
+    setText("state-actual", `${formatAngleValue(state.pan_deg)} / ${formatAngleValue(state.tilt_deg)}`);
+    setText("state-target", `${formatAngleValue(state.pan_target_deg)} / ${formatAngleValue(state.tilt_target_deg)}`);
+    setText("state-predicted", `${formatAngleValue(state.predicted_pan_deg)} / ${formatAngleValue(state.predicted_tilt_deg)}`);
+    setText("state-error", `${formatAngleValue(state.pan_tracking_error_deg)} / ${formatAngleValue(state.tilt_tracking_error_deg)}`);
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {
     setStatusPill("backend-status", "Error", "red");
+    setText("state-actual", "—");
+    setText("state-target", "—");
+    setText("state-predicted", "—");
+    setText("state-error", "—");
     setText("state-output", String(error));
   }
 }
