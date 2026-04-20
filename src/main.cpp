@@ -1163,6 +1163,43 @@ void publishRemoteState(bool force = false) {
   time_t unixTimeUtc = 0;
   if (currentUnixTimeUtc(unixTimeUtc)) {
     doc["remote_utc"] = static_cast<int64_t>(unixTimeUtc);
+    const Vec3 sunDirection = sunVectorFromUnixTime(unixTimeUtc);
+    float sunBearingDeg = 0.0f;
+    float sunElevationDeg = 0.0f;
+    float currentNormalBearingDeg = 0.0f;
+    float currentNormalElevationDeg = 0.0f;
+    bearingElevationFromVector(sunDirection, sunBearingDeg, sunElevationDeg);
+    const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+    bearingElevationFromVector(currentNormal, currentNormalBearingDeg, currentNormalElevationDeg);
+    doc["sun_bearing_deg"] = sunBearingDeg;
+    doc["sun_elevation_deg"] = sunElevationDeg;
+    doc["normal_bearing_deg"] = currentNormalBearingDeg;
+    doc["normal_elevation_deg"] = currentNormalElevationDeg;
+    if (targetDirectionValid) {
+      float targetBearingDeg = 0.0f;
+      float targetElevationDeg = 0.0f;
+      bearingElevationFromVector(targetDirection, targetBearingDeg, targetElevationDeg);
+      doc["target_bearing_deg"] = targetBearingDeg;
+      doc["target_elevation_deg"] = targetElevationDeg;
+
+      Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
+      if (lengthVec3(desiredNormal) > 0.0f && dotVec3(currentNormal, desiredNormal) < 0.0f) {
+        desiredNormal = scaleVec3(desiredNormal, -1.0f);
+      }
+      float desiredNormalBearingDeg = 0.0f;
+      float desiredNormalElevationDeg = 0.0f;
+      float predictedPanDeg = 0.0f;
+      float predictedTiltDeg = 0.0f;
+      bearingElevationFromVector(desiredNormal, desiredNormalBearingDeg, desiredNormalElevationDeg);
+      panTiltFromMirrorNormal(desiredNormal, predictedPanDeg, predictedTiltDeg);
+      doc["desired_normal_bearing_deg"] = desiredNormalBearingDeg;
+      doc["desired_normal_elevation_deg"] = desiredNormalElevationDeg;
+      doc["predicted_pan_deg"] = predictedPanDeg;
+      doc["predicted_tilt_deg"] = tiltExternalFromInternalDeg(predictedTiltDeg);
+      doc["pan_tracking_error_deg"] = predictedPanDeg - panAngleDeg;
+      doc["tilt_tracking_error_deg"] =
+          tiltExternalFromInternalDeg(predictedTiltDeg) - tiltExternalFromInternalDeg(tiltAngleDeg);
+    }
   }
 
   String payload;

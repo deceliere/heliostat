@@ -22,6 +22,14 @@ async function loadPresets() {
   return response.json();
 }
 
+async function loadDriftSamples() {
+  const response = await fetch("/api/drift", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`drift request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -43,6 +51,7 @@ let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
 let latestPresets = { site_locations: [], beam_directions: [] };
+let latestDriftSamples = [];
 let scanSpeedSlider = null;
 let scanDwellSlider = null;
 
@@ -108,6 +117,57 @@ function formatUnixMs(unixMs) {
     return "Unknown";
   }
   return new Date(unixMs).toISOString().replace(".000Z", "Z");
+}
+
+function formatAnglePair(a, b, suffix = "°") {
+  if (typeof a !== "number" || typeof b !== "number") {
+    return "Unknown";
+  }
+  return `${a.toFixed(2)} / ${b.toFixed(2)}${suffix}`;
+}
+
+function renderDriftSamples() {
+  const body = document.getElementById("drift-samples-body");
+  if (!body) {
+    return;
+  }
+
+  if (!latestDriftSamples.length) {
+    body.innerHTML = '<tr><td colspan="9">No samples</td></tr>';
+    return;
+  }
+
+  body.innerHTML = latestDriftSamples
+    .slice()
+    .reverse()
+    .map((sample) => {
+      const state = sample.state ?? {};
+      const time = formatUnixMs(sample.timestamp_unix_ms);
+      const label = sample.label || "—";
+      const panCorrection = Number.isFinite(Number(sample.pan_correction_deg))
+        ? Number(sample.pan_correction_deg).toFixed(2)
+        : "—";
+      const tiltCorrection = Number.isFinite(Number(sample.tilt_correction_deg))
+        ? Number(sample.tilt_correction_deg).toFixed(2)
+        : "—";
+      const pan = typeof state.pan_deg === "number" ? state.pan_deg.toFixed(2) : "—";
+      const tilt = typeof state.tilt_deg === "number" ? state.tilt_deg.toFixed(2) : "—";
+      const sun = formatAnglePair(state.sun_bearing_deg, state.sun_elevation_deg, "°");
+      const error = formatAnglePair(state.pan_tracking_error_deg, state.tilt_tracking_error_deg, "°");
+      const note = sample.note || "—";
+      return `<tr>
+        <td>${time}</td>
+        <td>${label}</td>
+        <td>${panCorrection}</td>
+        <td>${tiltCorrection}</td>
+        <td>${pan}</td>
+        <td>${tilt}</td>
+        <td>${sun}</td>
+        <td>${error}</td>
+        <td>${note}</td>
+      </tr>`;
+    })
+    .join("");
 }
 
 function readAbsoluteTargets() {
@@ -323,6 +383,9 @@ function bindControlButtons() {
   const resumeBackwardScanButton = document.getElementById("resume-backward-scan");
   const resumeForwardScanButton = document.getElementById("resume-forward-scan");
   const useScanLockButton = document.getElementById("use-scan-lock");
+  const recordDriftSampleButton = document.getElementById("record-drift-sample");
+  const exportDriftSamplesButton = document.getElementById("export-drift-samples");
+  const clearDriftSamplesButton = document.getElementById("clear-drift-samples");
   scanSpeedSlider = document.getElementById("scan-speed");
   scanDwellSlider = document.getElementById("scan-dwell");
 
@@ -567,14 +630,53 @@ function bindControlButtons() {
     });
     await refreshUi();
   });
+
+  recordDriftSampleButton?.addEventListener("click", async () => {
+    const payload = {
+      label: document.getElementById("drift-label")?.value ?? "",
+      pan_correction_deg: Number(document.getElementById("drift-pan-correction")?.value ?? ""),
+      tilt_correction_deg: Number(document.getElementById("drift-tilt-correction")?.value ?? ""),
+      note: document.getElementById("drift-note")?.value ?? "",
+      state: latestState,
+    };
+    if (!Number.isFinite(payload.pan_correction_deg)) {
+      delete payload.pan_correction_deg;
+    }
+    if (!Number.isFinite(payload.tilt_correction_deg)) {
+      delete payload.tilt_correction_deg;
+    }
+    const result = await postJson("/api/drift/sample", payload);
+    latestDriftSamples = result.samples ?? latestDriftSamples;
+    renderDriftSamples();
+  });
+
+  exportDriftSamplesButton?.addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(latestDriftSamples, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `heliostat-drift-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  });
+
+  clearDriftSamplesButton?.addEventListener("click", async () => {
+    const result = await postJson("/api/drift/clear", {});
+    latestDriftSamples = result.samples ?? [];
+    renderDriftSamples();
+  });
 }
 
 async function refreshUi() {
   try {
-    const [health, state, presets] = await Promise.all([loadHealth(), loadState(), loadPresets()]);
+    const [health, state, presets, drift] = await Promise.all([loadHealth(), loadState(), loadPresets(), loadDriftSamples()]);
     latestState = state;
     latestPresets = presets;
+    latestDriftSamples = drift.samples ?? [];
     renderPresets();
+    renderDriftSamples();
     const panInput = document.getElementById("pan-absolute");
     const tiltInput = document.getElementById("tilt-absolute");
     if (panInput) {
@@ -677,6 +779,20 @@ async function refreshUi() {
     } else {
       setStatusPill("scan-dwell-active", "Unknown", "amber");
     }
+
+    setStatusPill("drift-sun", formatAnglePair(state.sun_bearing_deg, state.sun_elevation_deg), typeof state.sun_bearing_deg === "number" ? "slate" : "amber");
+    setStatusPill("drift-normal", formatAnglePair(state.normal_bearing_deg, state.normal_elevation_deg), typeof state.normal_bearing_deg === "number" ? "slate" : "amber");
+    setStatusPill("drift-target", formatAnglePair(state.target_bearing_deg, state.target_elevation_deg), typeof state.target_bearing_deg === "number" ? "slate" : "amber");
+    setStatusPill("drift-desired-normal", formatAnglePair(state.desired_normal_bearing_deg, state.desired_normal_elevation_deg), typeof state.desired_normal_bearing_deg === "number" ? "slate" : "amber");
+    setStatusPill("drift-predicted", formatAnglePair(state.predicted_pan_deg, state.predicted_tilt_deg), typeof state.predicted_pan_deg === "number" ? "slate" : "amber");
+    const errorTone =
+      typeof state.pan_tracking_error_deg === "number" &&
+      Math.abs(state.pan_tracking_error_deg) < 0.2 &&
+      typeof state.tilt_tracking_error_deg === "number" &&
+      Math.abs(state.tilt_tracking_error_deg) < 0.2
+        ? "green"
+        : "amber";
+    setStatusPill("drift-error", formatAnglePair(state.pan_tracking_error_deg, state.tilt_tracking_error_deg), typeof state.pan_tracking_error_deg === "number" ? errorTone : "amber");
 
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {

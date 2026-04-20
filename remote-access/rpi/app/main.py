@@ -15,6 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 PRESETS_PATH = DATA_DIR / "presets.json"
+DRIFT_SAMPLES_PATH = DATA_DIR / "drift_samples.json"
 MQTT_HOST = os.getenv("HELIOSTAT_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.getenv("HELIOSTAT_MQTT_PORT", "1883"))
 MQTT_BASE_TOPIC = os.getenv("HELIOSTAT_MQTT_BASE_TOPIC", "heliostat/remote1")
@@ -64,6 +65,18 @@ runtime_state = {
     "time_source": "unknown",
     "last_state_update_unix_ms": 0,
     "last_diag": None,
+    "sun_bearing_deg": None,
+    "sun_elevation_deg": None,
+    "normal_bearing_deg": None,
+    "normal_elevation_deg": None,
+    "target_bearing_deg": None,
+    "target_elevation_deg": None,
+    "desired_normal_bearing_deg": None,
+    "desired_normal_elevation_deg": None,
+    "predicted_pan_deg": None,
+    "predicted_tilt_deg": None,
+    "pan_tracking_error_deg": None,
+    "tilt_tracking_error_deg": None,
 }
 
 PRESET_GROUPS = {"site_locations", "beam_directions"}
@@ -109,6 +122,25 @@ def load_presets() -> dict:
             if isinstance(values, list):
                 presets[key] = values
     return presets
+
+
+def load_drift_samples() -> list[dict]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not DRIFT_SAMPLES_PATH.exists():
+        DRIFT_SAMPLES_PATH.write_text("[]\n", encoding="utf-8")
+        return []
+
+    try:
+        loaded = json.loads(DRIFT_SAMPLES_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        loaded = []
+
+    return loaded if isinstance(loaded, list) else []
+
+
+def save_drift_samples(samples: list[dict]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DRIFT_SAMPLES_PATH.write_text(json.dumps(samples, indent=2) + "\n", encoding="utf-8")
 
 
 def save_presets(presets: dict) -> None:
@@ -218,6 +250,18 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           target_ok=bool(data.get("target_ok", False)),
           ntp_ok=bool(data.get("ntp_ok", False)),
           time_source=data.get("time_source", "unknown"),
+          sun_bearing_deg=data.get("sun_bearing_deg"),
+          sun_elevation_deg=data.get("sun_elevation_deg"),
+          normal_bearing_deg=data.get("normal_bearing_deg"),
+          normal_elevation_deg=data.get("normal_elevation_deg"),
+          target_bearing_deg=data.get("target_bearing_deg"),
+          target_elevation_deg=data.get("target_elevation_deg"),
+          desired_normal_bearing_deg=data.get("desired_normal_bearing_deg"),
+          desired_normal_elevation_deg=data.get("desired_normal_elevation_deg"),
+          predicted_pan_deg=data.get("predicted_pan_deg"),
+          predicted_tilt_deg=data.get("predicted_tilt_deg"),
+          pan_tracking_error_deg=data.get("pan_tracking_error_deg"),
+          tilt_tracking_error_deg=data.get("tilt_tracking_error_deg"),
           last_state_update_unix_ms=int(round(time.time() * 1000)),
           remote_online=bool(data.get("mqtt_ok", get_state().get("remote_online", False))),
       )
@@ -269,6 +313,34 @@ def api_state() -> dict:
 @app.get("/api/presets")
 def api_presets() -> dict:
     return load_presets()
+
+
+@app.get("/api/drift")
+def api_drift() -> dict:
+    return {"samples": load_drift_samples()}
+
+
+@app.post("/api/drift/sample")
+def api_drift_sample(payload: dict) -> dict:
+    samples = load_drift_samples()
+    sample = {
+        "timestamp_unix_ms": int(round(time.time() * 1000)),
+        "label": str(payload.get("label", "")).strip(),
+        "pan_correction_deg": payload.get("pan_correction_deg"),
+        "tilt_correction_deg": payload.get("tilt_correction_deg"),
+        "note": str(payload.get("note", "")).strip(),
+        "state": payload.get("state", {}),
+    }
+    samples.append(sample)
+    save_drift_samples(samples)
+    return {"ok": True, "samples": samples, "sample": sample}
+
+
+@app.post("/api/drift/clear")
+def api_drift_clear() -> dict:
+    samples: list[dict] = []
+    save_drift_samples(samples)
+    return {"ok": True, "samples": samples}
 
 
 @app.post("/api/presets/site")

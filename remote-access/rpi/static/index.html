@@ -252,6 +252,79 @@
       </section>
 
       <section class="state-card">
+        <h2>Drift Debug</h2>
+        <div class="status-grid drift-status-grid">
+          <div>
+            <span class="label">Sun</span>
+            <span id="drift-sun" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Normal</span>
+            <span id="drift-normal" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Target</span>
+            <span id="drift-target" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Desired Normal</span>
+            <span id="drift-desired-normal" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Predicted</span>
+            <span id="drift-predicted" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Tracking Error</span>
+            <span id="drift-error" class="status-pill">Unknown</span>
+          </div>
+        </div>
+        <div class="manual-grid">
+          <label>
+            <span class="label">Sample Label</span>
+            <input id="drift-label" type="text" placeholder="Morning run" />
+          </label>
+          <label>
+            <span class="label">Pan Correction Applied</span>
+            <input id="drift-pan-correction" type="number" step="0.01" placeholder="-0.30" />
+          </label>
+          <label>
+            <span class="label">Tilt Correction Applied</span>
+            <input id="drift-tilt-correction" type="number" step="0.01" placeholder="0.05" />
+          </label>
+          <label>
+            <span class="label">Note</span>
+            <input id="drift-note" type="text" placeholder="Drifted left after 15 min" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="record-drift-sample">Record Drift Sample</button>
+          <button type="button" id="export-drift-samples">Export JSON</button>
+          <button type="button" id="clear-drift-samples">Clear Samples</button>
+        </div>
+        <div class="drift-table-shell">
+          <table class="drift-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Label</th>
+                <th>Pan Corr</th>
+                <th>Tilt Corr</th>
+                <th>Pan</th>
+                <th>Tilt</th>
+                <th>Sun</th>
+                <th>Error</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody id="drift-samples-body">
+              <tr><td colspan="9">No samples</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="state-card">
         <h2>Last State</h2>
         <pre id="state-output">Loading…</pre>
       </section>
