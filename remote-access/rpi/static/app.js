@@ -134,6 +134,19 @@ function formatAngleValue(value, suffix = "°") {
   return `${value.toFixed(2)}${suffix}`;
 }
 
+function voltageTone(voltage) {
+  if (typeof voltage !== "number") {
+    return "amber";
+  }
+  if (voltage >= 12.0) {
+    return "green";
+  }
+  if (voltage >= 11.0) {
+    return "amber";
+  }
+  return "red";
+}
+
 function renderDriftSamples() {
   const body = document.getElementById("drift-samples-body");
   if (!body) {
@@ -775,12 +788,12 @@ async function refreshUi() {
 
     setStatusPill("state-updated", formatUnixMs(state.last_state_update_unix_ms), state.last_state_update_unix_ms ? "slate" : "amber");
     if (typeof state.pan_voltage_v === "number") {
-      setStatusPill("pan-voltage", `${state.pan_voltage_v.toFixed(1)} V`, "slate");
+      setStatusPill("pan-voltage", `${state.pan_voltage_v.toFixed(1)} V`, voltageTone(state.pan_voltage_v));
     } else {
       setStatusPill("pan-voltage", "Unknown", "amber");
     }
     if (typeof state.tilt_voltage_v === "number") {
-      setStatusPill("tilt-voltage", `${state.tilt_voltage_v.toFixed(1)} V`, "slate");
+      setStatusPill("tilt-voltage", `${state.tilt_voltage_v.toFixed(1)} V`, voltageTone(state.tilt_voltage_v));
     } else {
       setStatusPill("tilt-voltage", "Unknown", "amber");
     }
