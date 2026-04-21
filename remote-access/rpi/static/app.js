@@ -55,16 +55,16 @@ let latestDriftSamples = [];
 let driftBaseline = null;
 let scanSpeedSlider = null;
 
-function scanSliderToMoveSpeedDegPerSec(speedValue) {
-  const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
-  return 1 + ((speed - 1) * ((120 - 1) / 19));
+function readScanServoSpeed(speedValue) {
+  const rawSpeed = Number(speedValue);
+  if (!Number.isFinite(rawSpeed)) {
+    return 2000;
+  }
+  return Math.max(1500, Math.min(3500, Math.round(rawSpeed)));
 }
 
-function formatScanSpeedDegPerSec(speedDegPerSec) {
-  if (speedDegPerSec < 10) {
-    return `${speedDegPerSec.toFixed(1)}°/s`;
-  }
-  return `${speedDegPerSec.toFixed(0)}°/s`;
+function formatScanServoSpeed(speedValue) {
+  return `${Math.round(speedValue)}`;
 }
 
 function readScanRangeOverrideDeg() {
@@ -447,7 +447,7 @@ function bindControlButtons() {
     if (!scanSpeedSlider) {
       return;
     }
-    setStatusPill("scan-speed-value", formatScanSpeedDegPerSec(scanSliderToMoveSpeedDegPerSec(scanSpeedSlider.value)), "slate");
+    setStatusPill("scan-speed-value", formatScanServoSpeed(readScanServoSpeed(scanSpeedSlider.value)), "slate");
   };
 
   scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
@@ -458,7 +458,7 @@ function bindControlButtons() {
       stage,
       center_pan_deg: panCenter,
       center_tilt_deg: tiltCenter,
-      move_speed_deg_per_sec: scanSliderToMoveSpeedDegPerSec(scanSpeedSlider?.value),
+      move_speed: readScanServoSpeed(scanSpeedSlider?.value),
       direction: "forward",
     };
     const rangeOverrideDeg = readScanRangeOverrideDeg();
@@ -842,8 +842,8 @@ async function refreshUi() {
       setStatusPill("approx-position", "Unknown", "amber");
     }
 
-    if (typeof state.scan_move_speed_deg_per_sec === "number" && state.scan_move_speed_deg_per_sec > 0) {
-      setStatusPill("scan-speed-active", formatScanSpeedDegPerSec(state.scan_move_speed_deg_per_sec), "slate");
+    if (typeof state.scan_move_speed === "number" && state.scan_move_speed > 0) {
+      setStatusPill("scan-speed-active", formatScanServoSpeed(state.scan_move_speed), "slate");
     } else {
       setStatusPill("scan-speed-active", "Unknown", "amber");
     }

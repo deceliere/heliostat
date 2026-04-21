@@ -83,7 +83,6 @@ constexpr uint32_t ST3020_UART_BAUD = 1000000;
 constexpr uint8_t ST3020_PAN_ID = 1;
 constexpr uint8_t ST3020_TILT_ID = 2;
 constexpr uint16_t ST3020_DEFAULT_SPEED = 4000;
-constexpr uint16_t ST3020_MIN_COMMAND_SPEED = 15;
 constexpr uint8_t ST3020_DEFAULT_ACC = 50;
 constexpr bool ST3020_HOLD_TORQUE_ENABLED = true;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
@@ -132,7 +131,9 @@ constexpr float SCAN_FINE_STEP_DEG = 0.25f;
 constexpr float SCAN_MICRO_RANGE_PAN_DEG = 0.5f;
 constexpr float SCAN_MICRO_RANGE_TILT_DEG = 0.5f;
 constexpr float SCAN_MICRO_STEP_DEG = 0.1f;
-constexpr float SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC = 120.0f;
+constexpr uint16_t SCAN_MOVE_SPEED_MIN = 1500;
+constexpr uint16_t SCAN_MOVE_SPEED_MAX = 3500;
+constexpr uint16_t SCAN_MOVE_SPEED_DEFAULT = 2000;
 #ifndef REMOTE_WIFI_SSID
 #define REMOTE_WIFI_SSID "TODO_WIFI_SSID"
 #endif
@@ -335,7 +336,7 @@ uint16_t scanGridCols = 0;
 uint16_t scanGridRows = 0;
 uint16_t scanPointIndex = 0;
 uint16_t scanPointsTotal = 0;
-float scanMoveSpeedDegPerSec = SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC;
+uint16_t scanMoveSpeed = SCAN_MOVE_SPEED_DEFAULT;
 bool scanLockValid = false;
 float scanLockPanDeg = PAN_START_DEG;
 float scanLockTiltDeg = TILT_START_DEG;
@@ -944,43 +945,6 @@ int st3020PositionDeltaForStep(float angleDeg,
   return max(forwardDelta, backwardDelta);
 }
 
-float st3020StepsPerDegNearAngle(float angleDeg,
-                                 float minDeg,
-                                 float maxDeg,
-                                 int (*positionFromAngle)(float)) {
-  const float clampedAngle = constrain(angleDeg, minDeg, maxDeg);
-  const float forwardAngle = constrain(clampedAngle + 1.0f, minDeg, maxDeg);
-  const float backwardAngle = constrain(clampedAngle - 1.0f, minDeg, maxDeg);
-  const int currentPos = positionFromAngle(clampedAngle);
-
-  float stepsPerDeg = 0.0f;
-  if (forwardAngle > clampedAngle) {
-    stepsPerDeg = max(stepsPerDeg,
-                      static_cast<float>(abs(positionFromAngle(forwardAngle) - currentPos)) /
-                          (forwardAngle - clampedAngle));
-  }
-  if (backwardAngle < clampedAngle) {
-    stepsPerDeg = max(stepsPerDeg,
-                      static_cast<float>(abs(currentPos - positionFromAngle(backwardAngle))) /
-                          (clampedAngle - backwardAngle));
-  }
-
-  return (stepsPerDeg > 0.0f) ? stepsPerDeg : 1.0f;
-}
-
-uint16_t st3020CommandSpeedForAxis(float targetDeg,
-                                   float requestedSpeedDegPerSec,
-                                   float minDeg,
-                                   float maxDeg,
-                                   int (*positionFromAngle)(float)) {
-  const float clampedSpeedDegPerSec = max(0.1f, requestedSpeedDegPerSec);
-  const float stepsPerDeg = st3020StepsPerDegNearAngle(targetDeg, minDeg, maxDeg, positionFromAngle);
-  const int rawSpeed = static_cast<int>(lroundf(clampedSpeedDegPerSec * stepsPerDeg));
-  return static_cast<uint16_t>(constrain(rawSpeed,
-                                         static_cast<int>(ST3020_MIN_COMMAND_SPEED),
-                                         static_cast<int>(ST3020_DEFAULT_SPEED)));
-}
-
 bool scanPointOnTarget() {
   if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020 &&
       st3020PanFeedbackValid && st3020TiltFeedbackValid) {
@@ -1072,10 +1036,8 @@ void writeRemoteActuatorsSt3020() {
   uint16_t panSpeed = ST3020_DEFAULT_SPEED;
   uint16_t tiltSpeed = ST3020_DEFAULT_SPEED;
   if (scanActive) {
-    panSpeed = st3020CommandSpeedForAxis(
-        panTargetDeg, scanMoveSpeedDegPerSec, panMinLimitDeg(), panMaxLimitDeg(), st3020PanPositionFromAngleDeg);
-    tiltSpeed = st3020CommandSpeedForAxis(
-        tiltTargetDeg, scanMoveSpeedDegPerSec, tiltMinLimitDeg(), tiltMaxLimitDeg(), st3020TiltPositionFromAngleDeg);
+    panSpeed = scanMoveSpeed;
+    tiltSpeed = scanMoveSpeed;
   }
   lastPanPulseUs = panPosition;
   lastTiltPulseUs = tiltPosition;
@@ -1094,7 +1056,7 @@ void writeRemoteActuatorsSt3020() {
   const uint32_t nowMs = millis();
   if ((nowMs - lastSt3020LogMs) >= 1000) {
     lastSt3020LogMs = nowMs;
-    Serial.printf("ST3020 write: pan=%d s=%u r=%d | tilt=%d s=%u r=%d\n",
+    Serial.printf("ST3020 write: pan=%d speed=%u r=%d | tilt=%d speed=%u r=%d\n",
                   panPosition, static_cast<unsigned>(panSpeed), panResult,
                   tiltPosition, static_cast<unsigned>(tiltSpeed), tiltResult);
   }
@@ -1258,7 +1220,7 @@ void publishRemoteState(bool force = false) {
   doc["scan_range_pan_deg"] = scanRangePanDeg;
   doc["scan_range_tilt_deg"] = scanRangeTiltDeg;
   doc["scan_step_deg"] = scanStepDeg;
-  doc["scan_move_speed_deg_per_sec"] = scanMoveSpeedDegPerSec;
+  doc["scan_move_speed"] = scanMoveSpeed;
   doc["scan_point_index"] = scanPointIndex;
   doc["scan_points_total"] = scanPointsTotal;
   doc["scan_lock_valid"] = scanLockValid;
@@ -1385,7 +1347,7 @@ void setScanTargetForIndex(uint16_t index) {
 void startScan(ScanStage stage,
                float centerPanDeg,
                float centerTiltDeg,
-               float moveSpeedOverrideDegPerSec = -1.0f,
+               int moveSpeedOverride = -1,
                float rangePanOverrideDeg = -1.0f,
                float rangeTiltOverrideDeg = -1.0f,
                int8_t direction = 1) {
@@ -1414,9 +1376,11 @@ void startScan(ScanStage stage,
     scanRangeTiltDeg = SCAN_MICRO_RANGE_TILT_DEG;
     scanStepDeg = SCAN_MICRO_STEP_DEG;
   }
-  scanMoveSpeedDegPerSec = SCAN_MOVE_SPEED_DEFAULT_DEG_PER_SEC;
-  if (moveSpeedOverrideDegPerSec > 0.0f) {
-    scanMoveSpeedDegPerSec = moveSpeedOverrideDegPerSec;
+  scanMoveSpeed = SCAN_MOVE_SPEED_DEFAULT;
+  if (moveSpeedOverride > 0) {
+    scanMoveSpeed = static_cast<uint16_t>(constrain(moveSpeedOverride,
+                                                    static_cast<int>(SCAN_MOVE_SPEED_MIN),
+                                                    static_cast<int>(SCAN_MOVE_SPEED_MAX)));
   }
   if (rangePanOverrideDeg > 0.0f) {
     scanRangePanDeg = rangePanOverrideDeg;
@@ -1457,18 +1421,21 @@ void handleRemoteScanCommand(const JsonDocument& doc) {
   const float defaultCenterTilt = scanLockValid ? scanLockTiltDeg : tiltTargetDeg;
   const float centerPan = doc["center_pan_deg"] | defaultCenterPan;
   const float centerTiltExternal = doc["center_tilt_deg"] | tiltExternalFromInternalDeg(defaultCenterTilt);
-  const float moveSpeedDegPerSec = doc["move_speed_deg_per_sec"] | -1.0f;
+  int moveSpeed = doc["move_speed"] | -1;
+  if (moveSpeed <= 0) {
+    moveSpeed = static_cast<int>(doc["move_speed_deg_per_sec"] | -1.0f);
+  }
   const char* directionString = doc["direction"] | "forward";
   const int8_t direction = (strcmp(directionString, "backward") == 0) ? -1 : 1;
   const float rangePanDeg = doc["range_pan_deg"] | -1.0f;
   const float rangeTiltDeg = doc["range_tilt_deg"] | -1.0f;
 
   if (strcmp(stage, "coarse") == 0) {
-    startScan(SCAN_STAGE_COARSE, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_COARSE, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), moveSpeed, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "fine") == 0) {
-    startScan(SCAN_STAGE_FINE, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_FINE, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), moveSpeed, rangePanDeg, rangeTiltDeg, direction);
   } else if (strcmp(stage, "micro") == 0) {
-    startScan(SCAN_STAGE_MICRO, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), moveSpeedDegPerSec, rangePanDeg, rangeTiltDeg, direction);
+    startScan(SCAN_STAGE_MICRO, centerPan, tiltInternalFromExternalDeg(centerTiltExternal), moveSpeed, rangePanDeg, rangeTiltDeg, direction);
   }
 }
 
@@ -1930,7 +1897,7 @@ void moveServosTowardTargets(uint32_t nowMs) {
     return;
   }
 
-  const float slewSpeedDegPerSec = scanActive ? scanMoveSpeedDegPerSec : SERVO_MAX_SLEW_DEG_PER_SEC;
+  const float slewSpeedDegPerSec = SERVO_MAX_SLEW_DEG_PER_SEC;
   const float maxStep = slewSpeedDegPerSec * (static_cast<float>(elapsedMs) / 1000.0f);
 
   panAngleDeg = stepToward(panAngleDeg, panTargetDeg, maxStep);

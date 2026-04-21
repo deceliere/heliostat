@@ -49,7 +49,7 @@ runtime_state = {
     "scan_range_tilt_deg": None,
     "scan_step_deg": None,
     "scan_dwell_ms": None,
-    "scan_move_speed_deg_per_sec": None,
+    "scan_move_speed": None,
     "scan_point_index": 0,
     "scan_points_total": 0,
     "scan_lock_valid": False,
@@ -238,7 +238,7 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           scan_range_tilt_deg=data.get("scan_range_tilt_deg"),
           scan_step_deg=data.get("scan_step_deg"),
           scan_dwell_ms=data.get("scan_dwell_ms"),
-          scan_move_speed_deg_per_sec=data.get("scan_move_speed_deg_per_sec"),
+          scan_move_speed=data.get("scan_move_speed"),
           scan_point_index=data.get("scan_point_index", 0),
           scan_points_total=data.get("scan_points_total", 0),
           scan_lock_valid=bool(data.get("scan_lock_valid", False)),
@@ -472,7 +472,7 @@ def api_cmd_scan_start(payload: dict) -> dict:
         "center_pan_deg": float(payload.get("center_pan_deg")),
         "center_tilt_deg": float(payload.get("center_tilt_deg")),
         "dwell_ms": int(payload.get("dwell_ms", 0)),
-        "move_speed_deg_per_sec": float(payload.get("move_speed_deg_per_sec", 0.0)),
+        "move_speed": int(payload.get("move_speed", 0)),
         "direction": payload.get("direction", "forward"),
     }
     if payload.get("range_pan_deg") is not None:
