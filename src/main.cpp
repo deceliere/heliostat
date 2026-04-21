@@ -1526,8 +1526,16 @@ void handleRemoteTimeCommand(const JsonDocument& doc) {
 }
 
 void handleRemoteLocationCommand(const JsonDocument& doc) {
-  heliostatLatitudeDeg = constrain(doc["latitude_deg"] | heliostatLatitudeDeg, -90.0f, 90.0f);
-  heliostatLongitudeDeg = fmodf((doc["longitude_deg"] | heliostatLongitudeDeg) + 540.0f, 360.0f) - 180.0f;
+  const float requestedLatitudeDeg = doc["latitude_deg"] | heliostatLatitudeDeg;
+  const float requestedLongitudeDeg = doc["longitude_deg"] | heliostatLongitudeDeg;
+  heliostatLatitudeDeg = constrain(requestedLatitudeDeg, -90.0f, 90.0f);
+  if (requestedLongitudeDeg >= -180.0f && requestedLongitudeDeg <= 180.0f) {
+    heliostatLongitudeDeg = requestedLongitudeDeg;
+  } else {
+    const double normalizedLongitudeDeg =
+        fmod(static_cast<double>(requestedLongitudeDeg) + 540.0, 360.0) - 180.0;
+    heliostatLongitudeDeg = static_cast<float>(normalizedLongitudeDeg);
+  }
   publishRemoteDiag("location_updated");
 }
 
