@@ -54,12 +54,6 @@ let latestPresets = { site_locations: [], beam_directions: [] };
 let latestDriftSamples = [];
 let driftBaseline = null;
 let scanSpeedSlider = null;
-let scanDwellSlider = null;
-
-function scanSpeedToDwellMs(speedValue) {
-  const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
-  return Math.round(400 - ((speed - 1) * ((400 - 40) / 19)));
-}
 
 function scanSliderToMoveSpeedDegPerSec(speedValue) {
   const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
@@ -441,7 +435,6 @@ function bindControlButtons() {
   const exportDriftSamplesButton = document.getElementById("export-drift-samples");
   const clearDriftSamplesButton = document.getElementById("clear-drift-samples");
   scanSpeedSlider = document.getElementById("scan-speed");
-  scanDwellSlider = document.getElementById("scan-dwell");
 
   const refreshScanSpeedLabel = () => {
     if (!scanSpeedSlider) {
@@ -449,24 +442,15 @@ function bindControlButtons() {
     }
     setStatusPill("scan-speed-value", `${scanSliderToMoveSpeedDegPerSec(scanSpeedSlider.value).toFixed(0)}°/s`, "slate");
   };
-  const refreshScanDwellLabel = () => {
-    if (!scanDwellSlider) {
-      return;
-    }
-    setStatusPill("scan-dwell-value", `${scanSpeedToDwellMs(scanDwellSlider.value)} ms`, "slate");
-  };
 
   scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
-  scanDwellSlider?.addEventListener("input", refreshScanDwellLabel);
   refreshScanSpeedLabel();
-  refreshScanDwellLabel();
 
   const buildScanCommand = (stage, panCenter, tiltCenter) => {
     const command = {
       stage,
       center_pan_deg: panCenter,
       center_tilt_deg: tiltCenter,
-      dwell_ms: scanSpeedToDwellMs(scanDwellSlider?.value),
       move_speed_deg_per_sec: scanSliderToMoveSpeedDegPerSec(scanSpeedSlider?.value),
       direction: "forward",
     };
@@ -855,12 +839,6 @@ async function refreshUi() {
       setStatusPill("scan-speed-active", `${state.scan_move_speed_deg_per_sec.toFixed(0)}°/s`, "slate");
     } else {
       setStatusPill("scan-speed-active", "Unknown", "amber");
-    }
-
-    if (typeof state.scan_dwell_ms === "number" && state.scan_dwell_ms > 0) {
-      setStatusPill("scan-dwell-active", `${state.scan_dwell_ms} ms`, "slate");
-    } else {
-      setStatusPill("scan-dwell-active", "Unknown", "amber");
     }
 
     setStatusPill("drift-sun", formatAnglePair(state.sun_bearing_deg, state.sun_elevation_deg), typeof state.sun_bearing_deg === "number" ? "slate" : "amber");
