@@ -54,6 +54,7 @@ let latestPresets = { site_locations: [], beam_directions: [] };
 let latestDriftSamples = [];
 let driftBaseline = null;
 let scanSpeedSlider = null;
+let scanDwellSlider = null;
 
 function readScanServoSpeed(speedValue) {
   const rawSpeed = Number(speedValue);
@@ -65,6 +66,18 @@ function readScanServoSpeed(speedValue) {
 
 function formatScanServoSpeed(speedValue) {
   return `${Math.round(speedValue)}`;
+}
+
+function readScanDwellMs(value) {
+  const rawValue = Number(value);
+  if (!Number.isFinite(rawValue)) {
+    return 200;
+  }
+  return Math.max(0, Math.min(2000, Math.round(rawValue)));
+}
+
+function formatScanDwellMs(value) {
+  return `${Math.round(value)} ms`;
 }
 
 function readScanRangeOverrideDeg() {
@@ -442,16 +455,21 @@ function bindControlButtons() {
   const exportDriftSamplesButton = document.getElementById("export-drift-samples");
   const clearDriftSamplesButton = document.getElementById("clear-drift-samples");
   scanSpeedSlider = document.getElementById("scan-speed");
+  scanDwellSlider = document.getElementById("scan-dwell");
 
-  const refreshScanSpeedLabel = () => {
+  const refreshScanLabels = () => {
     if (!scanSpeedSlider) {
       return;
     }
     setStatusPill("scan-speed-value", formatScanServoSpeed(readScanServoSpeed(scanSpeedSlider.value)), "slate");
+    if (scanDwellSlider) {
+      setStatusPill("scan-dwell-value", formatScanDwellMs(readScanDwellMs(scanDwellSlider.value)), "slate");
+    }
   };
 
-  scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
-  refreshScanSpeedLabel();
+  scanSpeedSlider?.addEventListener("input", refreshScanLabels);
+  scanDwellSlider?.addEventListener("input", refreshScanLabels);
+  refreshScanLabels();
 
   const buildScanCommand = (stage, panCenter, tiltCenter) => {
     const command = {
@@ -459,6 +477,7 @@ function bindControlButtons() {
       center_pan_deg: panCenter,
       center_tilt_deg: tiltCenter,
       move_speed: readScanServoSpeed(scanSpeedSlider?.value),
+      dwell_ms: readScanDwellMs(scanDwellSlider?.value),
       direction: "forward",
     };
     const rangeOverrideDeg = readScanRangeOverrideDeg();
@@ -846,6 +865,12 @@ async function refreshUi() {
       setStatusPill("scan-speed-active", formatScanServoSpeed(state.scan_move_speed), "slate");
     } else {
       setStatusPill("scan-speed-active", "Unknown", "amber");
+    }
+
+    if (typeof state.scan_dwell_ms === "number" && state.scan_dwell_ms >= 0) {
+      setStatusPill("scan-dwell-active", formatScanDwellMs(state.scan_dwell_ms), "slate");
+    } else {
+      setStatusPill("scan-dwell-active", "Unknown", "amber");
     }
 
     setStatusPill("drift-sun", formatAnglePair(state.sun_bearing_deg, state.sun_elevation_deg), typeof state.sun_bearing_deg === "number" ? "slate" : "amber");

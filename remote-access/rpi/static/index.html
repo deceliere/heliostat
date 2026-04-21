@@ -225,10 +225,22 @@
             <span class="label">Servo Speed Requested</span>
             <span id="scan-speed-value" class="status-pill">Unknown</span>
           </div>
+          <div>
+            <span class="label">Pause Active</span>
+            <span id="scan-dwell-active" class="status-pill">Unknown</span>
+          </div>
+          <div>
+            <span class="label">Pause Requested</span>
+            <span id="scan-dwell-value" class="status-pill">Unknown</span>
+          </div>
         </div>
         <label>
           <span class="label">Scan Servo Speed</span>
-          <input id="scan-speed" type="range" min="1500" max="3500" step="50" value="2000" />
+          <input id="scan-speed" type="range" min="100" max="3000" step="50" value="1000" />
+        </label>
+        <label>
+          <span class="label">Scan Pause</span>
+          <input id="scan-dwell" type="range" min="0" max="2000" step="25" value="200" />
         </label>
         <label>
           <span class="label">Scan Width (deg, full square, blank = stage default)</span>
