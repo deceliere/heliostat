@@ -77,6 +77,10 @@ h2 {
   gap: 12px;
 }
 
+.status-grid > div {
+  min-width: 0;
+}
+
 .scan-status-grid {
   margin-bottom: 12px;
 }
@@ -98,10 +102,14 @@ h2 {
   display: inline-flex;
   align-items: center;
   min-height: 34px;
+  max-width: 100%;
   padding: 6px 12px;
   border-radius: 999px;
   font-size: 0.92rem;
   font-weight: 600;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
   background: rgba(89, 102, 89, 0.12);
   color: var(--ink);
   border: 1px solid rgba(89, 102, 89, 0.14);

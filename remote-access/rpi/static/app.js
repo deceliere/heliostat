@@ -774,6 +774,16 @@ async function refreshUi() {
     }
 
     setStatusPill("state-updated", formatUnixMs(state.last_state_update_unix_ms), state.last_state_update_unix_ms ? "slate" : "amber");
+    if (typeof state.pan_voltage_v === "number") {
+      setStatusPill("pan-voltage", `${state.pan_voltage_v.toFixed(1)} V`, "slate");
+    } else {
+      setStatusPill("pan-voltage", "Unknown", "amber");
+    }
+    if (typeof state.tilt_voltage_v === "number") {
+      setStatusPill("tilt-voltage", `${state.tilt_voltage_v.toFixed(1)} V`, "slate");
+    } else {
+      setStatusPill("tilt-voltage", "Unknown", "amber");
+    }
     if (typeof state.site_latitude_deg === "number" && typeof state.site_longitude_deg === "number") {
       setStatusPill("site-gps", `${state.site_latitude_deg.toFixed(5)} / ${state.site_longitude_deg.toFixed(5)}`, "slate");
     } else {
