@@ -83,6 +83,7 @@ constexpr uint32_t ST3020_UART_BAUD = 1000000;
 constexpr uint8_t ST3020_PAN_ID = 1;
 constexpr uint8_t ST3020_TILT_ID = 2;
 constexpr uint16_t ST3020_DEFAULT_SPEED = 4000;
+constexpr uint16_t ST3020_MIN_COMMAND_SPEED = 15;
 constexpr uint8_t ST3020_DEFAULT_ACC = 50;
 constexpr bool ST3020_HOLD_TORQUE_ENABLED = true;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
@@ -943,6 +944,43 @@ int st3020PositionDeltaForStep(float angleDeg,
   return max(forwardDelta, backwardDelta);
 }
 
+float st3020StepsPerDegNearAngle(float angleDeg,
+                                 float minDeg,
+                                 float maxDeg,
+                                 int (*positionFromAngle)(float)) {
+  const float clampedAngle = constrain(angleDeg, minDeg, maxDeg);
+  const float forwardAngle = constrain(clampedAngle + 1.0f, minDeg, maxDeg);
+  const float backwardAngle = constrain(clampedAngle - 1.0f, minDeg, maxDeg);
+  const int currentPos = positionFromAngle(clampedAngle);
+
+  float stepsPerDeg = 0.0f;
+  if (forwardAngle > clampedAngle) {
+    stepsPerDeg = max(stepsPerDeg,
+                      static_cast<float>(abs(positionFromAngle(forwardAngle) - currentPos)) /
+                          (forwardAngle - clampedAngle));
+  }
+  if (backwardAngle < clampedAngle) {
+    stepsPerDeg = max(stepsPerDeg,
+                      static_cast<float>(abs(currentPos - positionFromAngle(backwardAngle))) /
+                          (clampedAngle - backwardAngle));
+  }
+
+  return (stepsPerDeg > 0.0f) ? stepsPerDeg : 1.0f;
+}
+
+uint16_t st3020CommandSpeedForAxis(float targetDeg,
+                                   float requestedSpeedDegPerSec,
+                                   float minDeg,
+                                   float maxDeg,
+                                   int (*positionFromAngle)(float)) {
+  const float clampedSpeedDegPerSec = max(0.1f, requestedSpeedDegPerSec);
+  const float stepsPerDeg = st3020StepsPerDegNearAngle(targetDeg, minDeg, maxDeg, positionFromAngle);
+  const int rawSpeed = static_cast<int>(lroundf(clampedSpeedDegPerSec * stepsPerDeg));
+  return static_cast<uint16_t>(constrain(rawSpeed,
+                                         static_cast<int>(ST3020_MIN_COMMAND_SPEED),
+                                         static_cast<int>(ST3020_DEFAULT_SPEED)));
+}
+
 bool scanPointOnTarget() {
   if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020 &&
       st3020PanFeedbackValid && st3020TiltFeedbackValid) {
@@ -1031,6 +1069,14 @@ void beginRemoteActuatorsSt3020() {
 void writeRemoteActuatorsSt3020() {
   const int panPosition = st3020PanPositionFromAngleDeg(panTargetDeg);
   const int tiltPosition = st3020TiltPositionFromAngleDeg(tiltTargetDeg);
+  uint16_t panSpeed = ST3020_DEFAULT_SPEED;
+  uint16_t tiltSpeed = ST3020_DEFAULT_SPEED;
+  if (scanActive) {
+    panSpeed = st3020CommandSpeedForAxis(
+        panTargetDeg, scanMoveSpeedDegPerSec, panMinLimitDeg(), panMaxLimitDeg(), st3020PanPositionFromAngleDeg);
+    tiltSpeed = st3020CommandSpeedForAxis(
+        tiltTargetDeg, scanMoveSpeedDegPerSec, tiltMinLimitDeg(), tiltMaxLimitDeg(), st3020TiltPositionFromAngleDeg);
+  }
   lastPanPulseUs = panPosition;
   lastTiltPulseUs = tiltPosition;
   if (panPosition == st3020LastCommandedPanPosition &&
@@ -1039,17 +1085,18 @@ void writeRemoteActuatorsSt3020() {
   }
   lastSt3020MotionCommandMs = millis();
   const int panResult =
-      st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
+      st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), panSpeed, ST3020_DEFAULT_ACC);
   const int tiltResult =
-      st3020Bus.WritePosEx(ST3020_TILT_ID, static_cast<s16>(tiltPosition), ST3020_DEFAULT_SPEED, ST3020_DEFAULT_ACC);
+      st3020Bus.WritePosEx(ST3020_TILT_ID, static_cast<s16>(tiltPosition), tiltSpeed, ST3020_DEFAULT_ACC);
   st3020LastCommandedPanPosition = panPosition;
   st3020LastCommandedTiltPosition = tiltPosition;
   static uint32_t lastSt3020LogMs = 0;
   const uint32_t nowMs = millis();
   if ((nowMs - lastSt3020LogMs) >= 1000) {
     lastSt3020LogMs = nowMs;
-    Serial.printf("ST3020 write: pan=%d r=%d | tilt=%d r=%d\n",
-                  panPosition, panResult, tiltPosition, tiltResult);
+    Serial.printf("ST3020 write: pan=%d s=%u r=%d | tilt=%d s=%u r=%d\n",
+                  panPosition, static_cast<unsigned>(panSpeed), panResult,
+                  tiltPosition, static_cast<unsigned>(tiltSpeed), tiltResult);
   }
   updateSt3020Feedback();
 }

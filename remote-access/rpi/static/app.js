@@ -57,7 +57,14 @@ let scanSpeedSlider = null;
 
 function scanSliderToMoveSpeedDegPerSec(speedValue) {
   const speed = Math.max(1, Math.min(20, Number(speedValue) || 6));
-  return Math.round(10 + ((speed - 1) * ((300 - 10) / 19)));
+  return 1 + ((speed - 1) * ((120 - 1) / 19));
+}
+
+function formatScanSpeedDegPerSec(speedDegPerSec) {
+  if (speedDegPerSec < 10) {
+    return `${speedDegPerSec.toFixed(1)}°/s`;
+  }
+  return `${speedDegPerSec.toFixed(0)}°/s`;
 }
 
 function readScanRangeOverrideDeg() {
@@ -440,7 +447,7 @@ function bindControlButtons() {
     if (!scanSpeedSlider) {
       return;
     }
-    setStatusPill("scan-speed-value", `${scanSliderToMoveSpeedDegPerSec(scanSpeedSlider.value).toFixed(0)}°/s`, "slate");
+    setStatusPill("scan-speed-value", formatScanSpeedDegPerSec(scanSliderToMoveSpeedDegPerSec(scanSpeedSlider.value)), "slate");
   };
 
   scanSpeedSlider?.addEventListener("input", refreshScanSpeedLabel);
@@ -836,7 +843,7 @@ async function refreshUi() {
     }
 
     if (typeof state.scan_move_speed_deg_per_sec === "number" && state.scan_move_speed_deg_per_sec > 0) {
-      setStatusPill("scan-speed-active", `${state.scan_move_speed_deg_per_sec.toFixed(0)}°/s`, "slate");
+      setStatusPill("scan-speed-active", formatScanSpeedDegPerSec(state.scan_move_speed_deg_per_sec), "slate");
     } else {
       setStatusPill("scan-speed-active", "Unknown", "amber");
     }
