@@ -730,6 +730,8 @@ function bindControlButtons() {
     const result = await postJson("/api/drift/sample", payload);
     latestDriftSamples = result.samples ?? latestDriftSamples;
     renderDriftSamples();
+    driftBaseline = snapshotDriftBaseline();
+    updateDriftBaselinePill();
   });
 
   exportDriftSamplesButton?.addEventListener("click", () => {
