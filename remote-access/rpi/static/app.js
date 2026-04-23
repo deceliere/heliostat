@@ -239,8 +239,8 @@ function updateDriftBaselinePill() {
 
 function readAbsoluteTargets() {
   return {
-    pan_deg: Number(document.getElementById("pan-absolute")?.value ?? 90),
-    tilt_deg: Number(document.getElementById("tilt-absolute")?.value ?? 90),
+    pan_deg: Number(document.getElementById("pan-absolute")?.value ?? 180),
+    tilt_deg: Number(document.getElementById("tilt-absolute")?.value ?? 0),
   };
 }
 
@@ -515,7 +515,7 @@ function bindControlButtons() {
 
   recenterButton?.addEventListener("click", async () => {
     await stopJogging();
-    await postJson("/api/cmd/move-to", { pan_deg: 90.0, tilt_deg: 90.0 });
+    await postJson("/api/cmd/action", { action: "recenter" });
     await refreshUi();
   });
 
@@ -626,7 +626,6 @@ function bindControlButtons() {
   syncTimeButton?.addEventListener("click", async () => {
     await postJson("/api/cmd/time", {
       unix_utc: Math.floor(Date.now() / 1000),
-      time_scale: 1.0,
     });
     await refreshUi();
   });

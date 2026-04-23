@@ -433,10 +433,7 @@ def api_cmd_time(payload: dict) -> dict:
     if unix_utc <= 0:
         raise HTTPException(status_code=400, detail="invalid unix_utc")
 
-    command = {
-        "unix_utc": unix_utc,
-        "time_scale": float(payload.get("time_scale", 1.0)),
-    }
+    command = {"unix_utc": unix_utc}
     mqtt_client.publish(topic("cmd/time"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 

@@ -36,9 +36,9 @@ constexpr int STATUS_LED_PIN = 23;
 constexpr int STATUS_LED_COUNT = 1;
 constexpr uint8_t LED_BRIGHTNESS = 32;
 
-constexpr float PAN_MIN_DEG = 0.0f;
-constexpr float PAN_MAX_DEG = 180.0f;
-constexpr float PAN_START_DEG = 90.0f;
+constexpr float PAN_MIN_DEG = 90.0f;
+constexpr float PAN_MAX_DEG = 270.0f;
+constexpr float PAN_START_DEG = 180.0f;
 constexpr float PAN_MODEL_SIGN = 1.0f;
 
 constexpr float TILT_MIN_DEG = 0.0f;
@@ -89,21 +89,21 @@ constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
 constexpr uint32_t ST3020_TORQUE_RELEASE_IDLE_MS = 250;
 constexpr float ST3020_PAN_SIGN = 1.0f;
 constexpr float ST3020_TILT_SIGN = -1.0f;
-constexpr int ST3020_POS_AT_0_DEG = 1024;
-constexpr int ST3020_POS_AT_90_DEG = 2048;
-constexpr int ST3020_POS_AT_180_DEG = 3072;
+constexpr int ST3020_PAN_POS_AT_90_DEG = 1024;
+constexpr int ST3020_PAN_POS_AT_180_DEG = 2048;
+constexpr int ST3020_PAN_POS_AT_270_DEG = 3072;
 constexpr float ST3020_TILT_CAL_EXT_0_DEG = 0.0f;
 constexpr float ST3020_TILT_CAL_EXT_45_DEG = 45.0f;
 constexpr float ST3020_TILT_CAL_EXT_90_DEG = 90.0f;
 constexpr int ST3020_TILT_POS_AT_EXT_0_DEG = 1024;
 constexpr int ST3020_TILT_POS_AT_EXT_45_DEG = 1528;
 constexpr int ST3020_TILT_POS_AT_EXT_90_DEG = 2038;
-constexpr int ST3020_PAN_POS_MIN = ST3020_POS_AT_0_DEG;
-constexpr int ST3020_PAN_POS_MAX = ST3020_POS_AT_180_DEG;
+constexpr int ST3020_PAN_POS_MIN = ST3020_PAN_POS_AT_90_DEG;
+constexpr int ST3020_PAN_POS_MAX = ST3020_PAN_POS_AT_270_DEG;
 constexpr int ST3020_TILT_POS_MIN = 0;
 constexpr int ST3020_TILT_POS_MAX = 4095;
-constexpr float ST3020_PAN_MIN_DEG = 0.0f;
-constexpr float ST3020_PAN_MAX_DEG = 180.0f;
+constexpr float ST3020_PAN_MIN_DEG = PAN_MIN_DEG;
+constexpr float ST3020_PAN_MAX_DEG = PAN_MAX_DEG;
 constexpr float ST3020_TILT_MIN_DEG = 90.0f;
 constexpr float ST3020_TILT_MAX_DEG = 210.0f;
 constexpr float ST3020_TILT_EXTERNAL_MIN_DEG = -13.0f;
@@ -112,7 +112,6 @@ constexpr float SPEED_CURVE_EXPONENT = 1.8f;
 constexpr float HELIOSTAT_LATITUDE_DEG = 46.200316f;
 constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139345f;
 constexpr time_t HELIOSTAT_START_UNIX_TIME_UTC = 0;
-constexpr float HELIOSTAT_TIME_SCALE = 1.0f;
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
 constexpr uint32_t REMOTE_STATE_PUBLISH_MS = 150;
 constexpr uint32_t REMOTE_WIFI_RETRY_MS = 10000;
@@ -178,7 +177,6 @@ constexpr uint8_t PACKET_FLAG_RECENTER = 0x01;
 constexpr uint8_t PACKET_FLAG_CAPTURE_TARGET = 0x02;
 constexpr uint8_t PACKET_FLAG_AUTO_TRACK = 0x04;
 constexpr uint8_t PACKET_FLAG_TIME_UPDATE = 0x08;
-constexpr uint8_t PACKET_FLAG_SCALE_UPDATE = 0x10;
 constexpr uint8_t PACKET_FLAG_PRECISION = 0x20;
 
 enum ControlMode : uint8_t {
@@ -241,7 +239,6 @@ struct EspNowPacket {
   float tiltTargetDeg;
   float capturedPanAngleDeg;
   float capturedTiltAngleDeg;
-  float timeScale;
   float autoReferencePanDeg;
   float autoReferenceTiltDeg;
   int64_t unixTimeUtc;
@@ -304,7 +301,6 @@ bool autoTrackEnabled = false;
 bool precisionManualMode = false;
 bool sendPending = false;
 bool timeUpdatePending = false;
-bool timeScaleUpdatePending = false;
 ControlMode controlMode = CONTROL_MODE_MANUAL;
 bool targetDirectionValid = false;
 bool sunTimeValid = false;
@@ -313,7 +309,6 @@ time_t heliostatStartUnixTimeUtc = HELIOSTAT_START_UNIX_TIME_UTC;
 uint32_t heliostatTimeBaseMillis = 0;
 float capturedPanAngleDeg = PAN_START_DEG;
 float capturedTiltAngleDeg = TILT_START_DEG;
-float heliostatTimeScale = HELIOSTAT_TIME_SCALE;
 float heliostatLatitudeDeg = HELIOSTAT_LATITUDE_DEG;
 float heliostatLongitudeDeg = HELIOSTAT_LONGITUDE_DEG;
 float lastAutoReferencePanDeg = PAN_START_DEG;
@@ -370,7 +365,6 @@ bool remoteReportedTargetDirectionValid = false;
 bool remoteReportedSunTimeValid = false;
 float remoteReportedCapturedPanAngleDeg = PAN_START_DEG;
 float remoteReportedCapturedTiltAngleDeg = TILT_START_DEG;
-float remoteReportedTimeScale = HELIOSTAT_TIME_SCALE;
 int remoteReportedPanPulseUs = PAN_SERVO_MIN_PULSE_US;
 int remoteReportedTiltPulseUs = TILT_SERVO_MIN_PULSE_US;
 time_t remoteReportedUnixTimeUtc = 0;
@@ -462,7 +456,7 @@ Vec3 reflectVector(const Vec3& incoming, const Vec3& normal) {
 }
 
 Vec3 mirrorNormalFromPanTilt(float panDeg, float tiltDeg) {
-  const float panAzimuthDeg = (PAN_MODEL_SIGN * (panDeg - 90.0f)) + 180.0f;
+  const float panAzimuthDeg = (PAN_MODEL_SIGN * (panDeg - PAN_START_DEG)) + 180.0f;
   const float panRad = degToRad(panAzimuthDeg);
   const float tiltRad = degToRad(TILT_MODEL_SIGN * (tiltDeg - TILT_START_DEG));
   const float cosTilt = cosf(tiltRad);
@@ -479,7 +473,7 @@ void panTiltFromMirrorNormal(const Vec3& normal, float& panDeg, float& tiltDeg) 
   if (panAzimuthDeg < 0.0f) {
     panAzimuthDeg += 360.0f;
   }
-  const float panModelDeg = 90.0f + (PAN_MODEL_SIGN * (panAzimuthDeg - 180.0f));
+  const float panModelDeg = PAN_START_DEG + (PAN_MODEL_SIGN * (panAzimuthDeg - 180.0f));
   panDeg = constrain(panModelDeg, PAN_MIN_DEG, PAN_MAX_DEG);
   const float tiltModelDeg = TILT_START_DEG + (TILT_MODEL_SIGN * radToDeg(asinf(normalized.z)));
   tiltDeg = constrain(tiltModelDeg, tiltMinLimitDeg(), tiltMaxLimitDeg());
@@ -490,10 +484,7 @@ bool currentUnixTimeUtc(time_t& unixTimeUtc) {
     return false;
   }
   const uint32_t elapsedMs = millis() - heliostatTimeBaseMillis;
-  unixTimeUtc =
-      heliostatStartUnixTimeUtc + static_cast<time_t>((static_cast<double>(elapsedMs) *
-                                                       static_cast<double>(heliostatTimeScale)) /
-                                                      1000.0);
+  unixTimeUtc = heliostatStartUnixTimeUtc + static_cast<time_t>(elapsedMs / 1000UL);
   return true;
 }
 
@@ -780,11 +771,6 @@ void setControllerHeliostatUnixTimeUtc(time_t unixTimeUtc) {
   setHeliostatUnixTimeUtc(unixTimeUtc);
   timeUpdatePending = true;
 }
-
-void setControllerHeliostatTimeScale(float scale) {
-  heliostatTimeScale = max(scale, 0.01f);
-  timeScaleUpdatePending = true;
-}
 #endif
 
 #if defined(DEVICE_ROLE_REMOTE)
@@ -864,10 +850,10 @@ int tiltAngleDegToLegacyPulseUs(float tiltDeg) {
 int st3020PanPositionFromAngleDeg(float angleDeg) {
   const float clamped = constrain(angleDeg, ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
   const float stepsPerDeg =
-      static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_90_DEG) / 90.0f;
-  const float signedOffsetDeg = (clamped - 90.0f) * ST3020_PAN_SIGN;
+      static_cast<float>(ST3020_PAN_POS_AT_270_DEG - ST3020_PAN_POS_AT_180_DEG) / 90.0f;
+  const float signedOffsetDeg = (clamped - PAN_START_DEG) * ST3020_PAN_SIGN;
   return constrain(
-      ST3020_POS_AT_90_DEG + static_cast<int>(lroundf(signedOffsetDeg * stepsPerDeg)),
+      ST3020_PAN_POS_AT_180_DEG + static_cast<int>(lroundf(signedOffsetDeg * stepsPerDeg)),
       ST3020_PAN_POS_MIN, ST3020_PAN_POS_MAX);
 }
 
@@ -900,9 +886,10 @@ int st3020TiltPositionFromAngleDeg(float angleDeg) {
 float st3020PanAngleDegFromPosition(int position) {
   const float clamped = static_cast<float>(constrain(position, ST3020_PAN_POS_MIN, ST3020_PAN_POS_MAX));
   const float stepsPerDeg =
-      static_cast<float>(ST3020_POS_AT_180_DEG - ST3020_POS_AT_90_DEG) / 90.0f;
-  const float signedOffsetDeg = (clamped - static_cast<float>(ST3020_POS_AT_90_DEG)) / stepsPerDeg;
-  return constrain(90.0f + (signedOffsetDeg / ST3020_PAN_SIGN), ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
+      static_cast<float>(ST3020_PAN_POS_AT_270_DEG - ST3020_PAN_POS_AT_180_DEG) / 90.0f;
+  const float signedOffsetDeg =
+      (clamped - static_cast<float>(ST3020_PAN_POS_AT_180_DEG)) / stepsPerDeg;
+  return constrain(PAN_START_DEG + (signedOffsetDeg / ST3020_PAN_SIGN), ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
 }
 
 float st3020TiltAngleDegFromPosition(int position) {
@@ -1030,8 +1017,8 @@ void beginRemoteActuatorsSt3020() {
                 static_cast<unsigned long>(ST3020_UART_BAUD),
                 static_cast<unsigned>(ST3020_PAN_ID),
                 static_cast<unsigned>(ST3020_TILT_ID));
-  Serial.printf("ST3020 map: 0deg=%d 90deg=%d 180deg=%d\n",
-                ST3020_POS_AT_0_DEG, ST3020_POS_AT_90_DEG, ST3020_POS_AT_180_DEG);
+  Serial.printf("ST3020 pan map: 90deg=%d 180deg=%d 270deg=%d\n",
+                ST3020_PAN_POS_AT_90_DEG, ST3020_PAN_POS_AT_180_DEG, ST3020_PAN_POS_AT_270_DEG);
 
   const int panPing = st3020Bus.Ping(ST3020_PAN_ID);
   const int tiltPing = st3020Bus.Ping(ST3020_TILT_ID);
@@ -1615,12 +1602,10 @@ void handleRemoteActionCommand(const JsonDocument& doc) {
 
 void handleRemoteTimeCommand(const JsonDocument& doc) {
   const int64_t unixTimeUtc = doc["unix_utc"] | 0;
-  const float timeScale = doc["time_scale"] | 1.0f;
   if (unixTimeUtc > 0) {
     setHeliostatUnixTimeUtc(static_cast<time_t>(unixTimeUtc));
     ntpTimeValid = false;
   }
-  heliostatTimeScale = max(timeScale, 0.01f);
 }
 
 void handleRemoteLocationCommand(const JsonDocument& doc) {
@@ -1709,8 +1694,7 @@ void ensureRemoteNtpTime(uint32_t nowMs) {
   time_t ntpUnixTime = 0;
   if (systemClockTimeValid(ntpUnixTime)) {
     ntpTimeValid = true;
-    if (fabsf(heliostatTimeScale - 1.0f) < 0.001f &&
-        ((nowMs - lastNtpApplyMs) >= REMOTE_NTP_RESYNC_MS || heliostatStartUnixTimeUtc <= 0)) {
+    if ((nowMs - lastNtpApplyMs) >= REMOTE_NTP_RESYNC_MS || heliostatStartUnixTimeUtc <= 0) {
       setHeliostatUnixTimeUtc(ntpUnixTime);
       lastNtpApplyMs = nowMs;
     }
@@ -1981,7 +1965,6 @@ void sendLedPacket() {
       (captureTargetRequested ? PACKET_FLAG_CAPTURE_TARGET : 0) |
       (autoTrackEnabled ? PACKET_FLAG_AUTO_TRACK : 0) |
       (timeUpdatePending ? PACKET_FLAG_TIME_UPDATE : 0) |
-      (timeScaleUpdatePending ? PACKET_FLAG_SCALE_UPDATE : 0) |
       (precisionManualMode ? PACKET_FLAG_PRECISION : 0);
   packet.seq = packetSequence++;
   packet.panInput = remotePanInput;
@@ -1992,7 +1975,6 @@ void sendLedPacket() {
   packet.tiltTargetDeg = remoteReportedTiltTargetDeg;
   packet.capturedPanAngleDeg = remoteReportedCapturedPanAngleDeg;
   packet.capturedTiltAngleDeg = remoteReportedCapturedTiltAngleDeg;
-  packet.timeScale = heliostatTimeScale;
   packet.unixTimeUtc =
       timeUpdatePending ? static_cast<int64_t>(heliostatStartUnixTimeUtc) : static_cast<int64_t>(0);
 
@@ -2005,7 +1987,6 @@ void sendLedPacket() {
     Serial.printf("ESP-NOW send failed immediately: %d\n", static_cast<int>(result));
   } else {
     timeUpdatePending = false;
-    timeScaleUpdatePending = false;
   }
 }
 
@@ -2032,7 +2013,6 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
     remoteReportedTiltTargetDeg = packet.tiltTargetDeg;
     remoteReportedCapturedPanAngleDeg = packet.capturedPanAngleDeg;
     remoteReportedCapturedTiltAngleDeg = packet.capturedTiltAngleDeg;
-    remoteReportedTimeScale = packet.timeScale;
     remoteReportedAutoReferencePanDeg = packet.autoReferencePanDeg;
     remoteReportedAutoReferenceTiltDeg = packet.autoReferenceTiltDeg;
     remoteReportedPanPulseUs = packet.panPulseUs;
@@ -2277,16 +2257,6 @@ void handleSerialCommandLine(const char* line) {
     }
   }
 
-  if (strncmp(line, "S=", 2) == 0 || strncmp(line, "s=", 2) == 0) {
-    const float parsed = atof(line + 2);
-    if (parsed > 0.0f) {
-      setControllerHeliostatTimeScale(parsed);
-      Serial.printf("Time scale set: %.3f\n", heliostatTimeScale);
-      sendLedPacket();
-      return;
-    }
-  }
-
   if (strcmp(line, "TIME?") == 0 || strcmp(line, "time?") == 0) {
     time_t unixTimeUtc = 0;
     if (currentUnixTimeUtc(unixTimeUtc)) {
@@ -2294,11 +2264,6 @@ void handleSerialCommandLine(const char* line) {
     } else {
       Serial.println("UTC time not set.");
     }
-    return;
-  }
-
-  if (strcmp(line, "SCALE?") == 0 || strcmp(line, "scale?") == 0) {
-    Serial.printf("Time scale current: %.3f\n", heliostatTimeScale);
     return;
   }
 
@@ -2313,9 +2278,7 @@ void handleSerialCommandLine(const char* line) {
     Serial.println("  JT=<delta_deg>        jog tilt target by delta (internal sign)");
 #else
     Serial.println("  T=<unix_utc_seconds>  set UTC time");
-    Serial.println("  S=<scale>             set heliostat time scale");
     Serial.println("  TIME?                 show current UTC time");
-    Serial.println("  SCALE?                show current time scale");
 #endif
     return;
   }
@@ -2426,7 +2389,6 @@ void sendAnnouncePacket(uint32_t nowMs) {
   packet.tiltTargetDeg = tiltTargetDeg;
   packet.capturedPanAngleDeg = capturedPanAngleDeg;
   packet.capturedTiltAngleDeg = capturedTiltAngleDeg;
-  packet.timeScale = heliostatTimeScale;
   packet.autoReferencePanDeg = lastAutoReferencePanDeg;
   packet.autoReferenceTiltDeg = lastAutoReferenceTiltDeg;
   packet.unixTimeUtc = haveCurrentUnixTime ? static_cast<int64_t>(currentUnixTime) : static_cast<int64_t>(0);
@@ -2461,9 +2423,6 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
   remoteTiltInput = constrain(packet.tiltInput, -1.0f, 1.0f);
   if ((packet.reserved[0] & PACKET_FLAG_TIME_UPDATE) != 0 && packet.unixTimeUtc > 0) {
     setHeliostatUnixTimeUtc(static_cast<time_t>(packet.unixTimeUtc));
-  }
-  if ((packet.reserved[0] & PACKET_FLAG_SCALE_UPDATE) != 0) {
-    heliostatTimeScale = max(packet.timeScale, 0.01f);
   }
   packetReceived = true;
   lastRxMs = millis();
@@ -2659,7 +2618,7 @@ void setup() {
   Serial.println("Xbox node: left stick = target angle movement, button A = recenter, LB = slow manual mode.");
   Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
   Serial.println("Button X captures the reflected target. Button Y toggles heliostat auto-track. Button B prints TRACK_DIAG.");
-  Serial.println("Serial: T=<unix_utc_seconds>, S=<scale>, TIME?, SCALE?.");
+  Serial.println("Serial: T=<unix_utc_seconds>, TIME?.");
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
 #else
   Serial.println("Remote node ready.");
