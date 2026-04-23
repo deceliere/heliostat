@@ -105,7 +105,8 @@ HTML_PAGE = """<!doctype html>
     }
     input[type="number"],
     input[type="date"],
-    input[type="time"] {
+    input[type="time"],
+    select {
       width: 100%;
       padding: 10px 12px;
       border: 1px solid var(--line);
@@ -122,6 +123,18 @@ HTML_PAGE = """<!doctype html>
       color: var(--muted);
       font-size: 12px;
       line-height: 1.4;
+    }
+    .hidden {
+      display: none;
+    }
+    .mode-note {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.7);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
     }
     .stat-grid {
       display: grid;
@@ -271,16 +284,44 @@ HTML_PAGE = """<!doctype html>
           </label>
 
           <label>
-            Azimut du miroir (direction horizontale de la normale)
-            <input id="mirrorAz" type="range" min="0" max="360" step="1" value="180">
-            <div class="hint"><span id="mirrorAzValue">180</span>°. 0° = nord, 90° = est, 180° = sud, 270° = ouest.</div>
+            Mode
+            <select id="mode">
+              <option value="manual">Normale manuelle</option>
+              <option value="lock">Réflexion verrouillée</option>
+            </select>
           </label>
 
-          <label>
-            Inclinaison du miroir
-            <input id="mirrorTilt" type="range" min="-89" max="89" step="1" value="45">
-            <div class="hint"><span id="mirrorTiltValue">45</span>°. 0° = miroir vertical, 90° ≈ miroir horizontal face au ciel. Cette valeur correspond à l’altitude de la normale du miroir.</div>
-          </label>
+          <div id="modeNote" class="mode-note">
+            En mode manuel, tu règles directement la normale du miroir.
+          </div>
+
+          <div id="manualControls" class="fields">
+            <label>
+              Azimut du miroir (direction horizontale de la normale)
+              <input id="mirrorAz" type="range" min="0" max="360" step="1" value="180">
+              <div class="hint"><span id="mirrorAzValue">180</span>°. 0° = nord, 90° = est, 180° = sud, 270° = ouest.</div>
+            </label>
+
+            <label>
+              Inclinaison du miroir
+              <input id="mirrorTilt" type="range" min="-89" max="89" step="1" value="45">
+              <div class="hint"><span id="mirrorTiltValue">45</span>°. 0° = miroir vertical, 90° ≈ miroir horizontal face au ciel. Cette valeur correspond à l’altitude de la normale du miroir.</div>
+            </label>
+          </div>
+
+          <div id="lockControls" class="fields hidden">
+            <label>
+              Azimut de la réflexion visée
+              <input id="targetReflAz" type="range" min="0" max="360" step="1" value="180">
+              <div class="hint"><span id="targetReflAzValue">180</span>°. Direction azimutale du rayon réfléchi dans le monde.</div>
+            </label>
+
+            <label>
+              Élévation de la réflexion visée
+              <input id="targetReflAlt" type="range" min="-89" max="89" step="1" value="0">
+              <div class="hint"><span id="targetReflAltValue">0</span>°. La normale est recalculée en fonction du soleil pour maintenir cette direction.</div>
+            </label>
+          </div>
         </div>
       </section>
 
@@ -480,6 +521,13 @@ HTML_PAGE = """<!doctype html>
       const m = Math.hypot(x, z) || 1;
       return { x: x / m, z: z / m, rawX: x, rawZ: z };
     }
+    function renderUnavailableView(label) {
+      return `
+        <svg viewBox="0 0 500 240">
+          <rect x="0" y="0" width="500" height="240" fill="#ffffff"/>
+          <text x="250" y="120" text-anchor="middle" fill="#94a3b8" font-size="16">${label}</text>
+        </svg>`;
+    }
     function renderSideView(sunToMirror, normalVec, reflectedVec, mirrorAz) {
       const w = 500, h = 240, cx = 200, cy = 170, len = 95;
       const normal2 = projectToMirrorVerticalPlane(normalVec, mirrorAz);
@@ -510,28 +558,76 @@ HTML_PAGE = """<!doctype html>
         </svg>`;
     }
 
+    function setModeVisibility(mode) {
+      const manualControls = document.getElementById("manualControls");
+      const lockControls = document.getElementById("lockControls");
+      if (manualControls) {
+        manualControls.classList.toggle("hidden", mode !== "manual");
+      }
+      if (lockControls) {
+        lockControls.classList.toggle("hidden", mode !== "lock");
+      }
+    }
+
     function update() {
       const lat = parseFloat(document.getElementById("lat").value) || 0;
       const lon = parseFloat(document.getElementById("lon").value) || 0;
       const date = document.getElementById("date").value;
       const time = document.getElementById("time").value;
       const utcOffset = parseFloat(document.getElementById("utcOffset").value) || 0;
+      const mode = document.getElementById("mode").value || "manual";
       const mirrorAz = parseFloat(document.getElementById("mirrorAz").value) || 0;
       const mirrorTilt = parseFloat(document.getElementById("mirrorTilt").value) || 0;
+      const targetReflAz = parseFloat(document.getElementById("targetReflAz").value) || 0;
+      const targetReflAlt = parseFloat(document.getElementById("targetReflAlt").value) || 0;
+
+      setModeVisibility(mode);
 
       document.getElementById("mirrorAzValue").textContent = fmt(mirrorAz, 0);
       document.getElementById("mirrorTiltValue").textContent = fmt(mirrorTilt, 0);
+      document.getElementById("targetReflAzValue").textContent = fmt(targetReflAz, 0);
+      document.getElementById("targetReflAltValue").textContent = fmt(targetReflAlt, 0);
 
       const dt = parseLocalToUTC(date, time, utcOffset);
       const sun = solarPosition(dt, lat, lon);
-      const sunToMirror = normalize(vecFromAzAlt(sun.azimuth, sun.altitude).map((v) => -v));
-      const normal = vecFromAzAlt(mirrorAz, mirrorTilt);
-      const reflected = reflect(sunToMirror, normal);
+      const sunVec = vecFromAzAlt(sun.azimuth, sun.altitude);
+      const sunToMirror = normalize(sunVec.map((v) => -v));
+
+      let normal;
+      let reflected;
+      let lockPossible = true;
+      let modeNote = "En mode manuel, tu règles directement la normale du miroir.";
+
+      if (mode === "lock") {
+        const targetReflected = vecFromAzAlt(targetReflAz, targetReflAlt);
+        const normalCandidate = [
+          sunVec[0] + targetReflected[0],
+          sunVec[1] + targetReflected[1],
+          sunVec[2] + targetReflected[2],
+        ];
+        const normalMagnitude = Math.hypot(normalCandidate[0], normalCandidate[1], normalCandidate[2]);
+        if (normalMagnitude < 1e-6) {
+          lockPossible = false;
+          normal = [NaN, NaN, NaN];
+          reflected = [NaN, NaN, NaN];
+          modeNote = "Réflexion verrouillée impossible pour cette cible et cette position du soleil.";
+        } else {
+          normal = normalize(normalCandidate);
+          reflected = reflect(sunToMirror, normal);
+          modeNote = "La normale suit automatiquement le soleil pour maintenir la direction réfléchie visée.";
+        }
+      } else {
+        normal = vecFromAzAlt(mirrorAz, mirrorTilt);
+        reflected = reflect(sunToMirror, normal);
+      }
 
       const sunAzAlt = { azimuth: sun.azimuth, altitude: sun.altitude };
-      const reflAzAlt = azAltFromVec(reflected);
-      const normalAzAlt = azAltFromVec(normal);
-      const incidenceAngle = rad2deg(Math.acos(clamp(Math.abs(dot(sunToMirror, normal)), -1, 1)));
+      const reflAzAlt = lockPossible ? azAltFromVec(reflected) : { azimuth: NaN, altitude: NaN };
+      const normalAzAlt = lockPossible ? azAltFromVec(normal) : { azimuth: NaN, altitude: NaN };
+      const incidenceAngle =
+        lockPossible ? rad2deg(Math.acos(clamp(Math.abs(dot(sunToMirror, normal)), -1, 1))) : NaN;
+
+      document.getElementById("modeNote").textContent = modeNote;
 
       document.getElementById("sunAz").textContent = fmt(sun.azimuth) + "°";
       document.getElementById("sunAlt").textContent = fmt(sun.altitude) + "°";
@@ -543,24 +639,29 @@ HTML_PAGE = """<!doctype html>
       document.getElementById("sunVisible").textContent = sun.altitude > 0 ? "oui" : "non";
 
       document.getElementById("sunVec").textContent = fmtVec(sunToMirror);
-      document.getElementById("normalVec").textContent = fmtVec(normal);
-      document.getElementById("reflVec").textContent = fmtVec(reflected);
+      document.getElementById("normalVec").textContent = lockPossible ? fmtVec(normal) : "Impossible";
+      document.getElementById("reflVec").textContent = lockPossible ? fmtVec(reflected) : "Impossible";
 
-      document.getElementById("polarView").innerHTML = renderPolarView(
-        sunAzAlt.azimuth,
-        sunAzAlt.altitude,
-        normalAzAlt.azimuth,
-        normalAzAlt.altitude,
-        reflAzAlt.azimuth,
-        reflAzAlt.altitude
-      );
+      if (lockPossible) {
+        document.getElementById("polarView").innerHTML = renderPolarView(
+          sunAzAlt.azimuth,
+          sunAzAlt.altitude,
+          normalAzAlt.azimuth,
+          normalAzAlt.altitude,
+          reflAzAlt.azimuth,
+          reflAzAlt.altitude
+        );
 
-      document.getElementById("sideView").innerHTML = renderSideView(
-        sunToMirror,
-        normal,
-        reflected,
-        mirrorAz
-      );
+        document.getElementById("sideView").innerHTML = renderSideView(
+          sunToMirror,
+          normal,
+          reflected,
+          normalAzAlt.azimuth
+        );
+      } else {
+        document.getElementById("polarView").innerHTML = renderUnavailableView("Réflexion impossible");
+        document.getElementById("sideView").innerHTML = renderUnavailableView("Réflexion impossible");
+      }
     }
 
     function initDefaults() {
