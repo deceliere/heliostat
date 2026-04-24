@@ -89,6 +89,8 @@ constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
 constexpr int ST3020_SETTLE_TOLERANCE_POS = 2;
 constexpr uint8_t ST3020_MAX_FINAL_CORRECTIONS = 8;
 constexpr int ST3020_FEEDBACK_TRIM_STEP_POS = 3;
+constexpr int ST3020_FEEDBACK_OVERSHOOT_POS = 4;
+constexpr uint8_t ST3020_MAX_FEEDBACK_OVERSHOOTS = 4;
 constexpr uint32_t ST3020_MOVE_SETTLE_MS = 120;
 constexpr uint32_t ST3020_MOVE_TIMEOUT_MARGIN_MS = 250;
 constexpr uint32_t ST3020_MOVE_MIN_COMMAND_MS = 80;
@@ -292,6 +294,7 @@ uint16_t st3020MotionSpeed = ST3020_DEFAULT_SPEED;
 uint32_t st3020MotionDeadlineMs = 0;
 uint32_t st3020MotionSettledSinceMs = 0;
 uint8_t st3020MotionCorrectionAttempts = 0;
+uint8_t st3020MotionFeedbackOvershootCount = 0;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
 #endif
@@ -1041,6 +1044,20 @@ int st3020StepPositionToward(int currentPosition, int targetPosition, int maxSte
   return currentPosition;
 }
 
+int st3020OvershootPositionBeyondTarget(int referencePosition,
+                                        int targetPosition,
+                                        int overshootPosition,
+                                        int minPosition,
+                                        int maxPosition) {
+  if (overshootPosition <= 0 || referencePosition == targetPosition) {
+    return targetPosition;
+  }
+  if (referencePosition < targetPosition) {
+    return min(targetPosition + overshootPosition, maxPosition);
+  }
+  return max(targetPosition - overshootPosition, minPosition);
+}
+
 void clearSt3020MotionState(bool releaseTorque = true) {
   st3020MotionStage = ST3020_MOTION_IDLE;
   st3020MotionCurrentPanPosition = -1;
@@ -1048,6 +1065,7 @@ void clearSt3020MotionState(bool releaseTorque = true) {
   st3020MotionDeadlineMs = 0;
   st3020MotionSettledSinceMs = 0;
   st3020MotionCorrectionAttempts = 0;
+  st3020MotionFeedbackOvershootCount = 0;
   if (releaseTorque && !ST3020_HOLD_TORQUE_ENABLED) {
     setSt3020TorqueEnabled(false);
   }
@@ -1150,6 +1168,7 @@ void scheduleSt3020AutoMotion(uint32_t nowMs) {
   st3020MotionFinalPanPosition = st3020PanPositionFromAngleDeg(panTargetDeg);
   st3020MotionFinalTiltPosition = st3020TiltPositionFromAngleDeg(tiltTargetDeg);
   st3020MotionCorrectionAttempts = 0;
+  st3020MotionFeedbackOvershootCount = 0;
 
   if (ST3020_AUTO_APPROACH_ENABLED) {
     const float approachPanDeg = constrain(panTargetDeg + ST3020_AUTO_APPROACH_PAN_OFFSET_DEG,
@@ -1189,10 +1208,35 @@ void beginSt3020FeedbackTrimStep(uint32_t nowMs) {
     referenceTiltPosition = st3020MotionFinalTiltPosition;
   }
 
-  const int trimPanPosition =
+  int trimPanPosition =
       st3020StepPositionToward(referencePanPosition, st3020MotionFinalPanPosition, ST3020_FEEDBACK_TRIM_STEP_POS);
-  const int trimTiltPosition =
+  int trimTiltPosition =
       st3020StepPositionToward(referenceTiltPosition, st3020MotionFinalTiltPosition, ST3020_FEEDBACK_TRIM_STEP_POS);
+  const bool canOvershootPan =
+      st3020MotionFeedbackOvershootCount < ST3020_MAX_FEEDBACK_OVERSHOOTS &&
+      referencePanPosition != st3020MotionFinalPanPosition &&
+      trimPanPosition == st3020MotionFinalPanPosition;
+  const bool canOvershootTilt =
+      st3020MotionFeedbackOvershootCount < ST3020_MAX_FEEDBACK_OVERSHOOTS &&
+      referenceTiltPosition != st3020MotionFinalTiltPosition &&
+      trimTiltPosition == st3020MotionFinalTiltPosition;
+  if (canOvershootPan) {
+    trimPanPosition = st3020OvershootPositionBeyondTarget(referencePanPosition,
+                                                          st3020MotionFinalPanPosition,
+                                                          ST3020_FEEDBACK_OVERSHOOT_POS,
+                                                          ST3020_PAN_POS_MIN,
+                                                          ST3020_PAN_POS_MAX);
+  }
+  if (canOvershootTilt) {
+    trimTiltPosition = st3020OvershootPositionBeyondTarget(referenceTiltPosition,
+                                                           st3020MotionFinalTiltPosition,
+                                                           ST3020_FEEDBACK_OVERSHOOT_POS,
+                                                           ST3020_TILT_POS_MIN,
+                                                           ST3020_TILT_POS_MAX);
+  }
+  if (canOvershootPan || canOvershootTilt) {
+    ++st3020MotionFeedbackOvershootCount;
+  }
   beginSt3020MotionStage(ST3020_MOTION_FINAL,
                          trimPanPosition,
                          trimTiltPosition,
@@ -1499,6 +1543,9 @@ void publishRemoteState(bool force = false) {
   doc["st3020_auto_approach_tilt_offset_deg"] = ST3020_AUTO_APPROACH_TILT_OFFSET_DEG;
   doc["st3020_feedback_correction_enabled"] = ST3020_FEEDBACK_CORRECTION_ENABLED;
   doc["st3020_feedback_trim_step_pos"] = ST3020_FEEDBACK_TRIM_STEP_POS;
+  doc["st3020_feedback_overshoot_pos"] = ST3020_FEEDBACK_OVERSHOOT_POS;
+  doc["st3020_max_feedback_overshoots"] = ST3020_MAX_FEEDBACK_OVERSHOOTS;
+  doc["st3020_feedback_overshoot_count"] = st3020MotionFeedbackOvershootCount;
   doc["st3020_settle_tolerance_pos"] = ST3020_SETTLE_TOLERANCE_POS;
   doc["pan_feedback_ok"] = st3020PanFeedbackValid;
   doc["tilt_feedback_ok"] = st3020TiltFeedbackValid;
