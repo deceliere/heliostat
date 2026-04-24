@@ -786,6 +786,15 @@ async function refreshUi() {
       setStatusPill("remote-mode", mode, "slate");
     }
 
+    const trackingModelVersion = state.tracking_model_version;
+    const trackingModelStage = state.tracking_model_stage;
+    if (trackingModelVersion) {
+      const tone = trackingModelStage === "beta" ? "amber" : "green";
+      setStatusPill("tracking-model", trackingModelVersion, tone);
+    } else {
+      setStatusPill("tracking-model", "Unknown", "amber");
+    }
+
     setStatusPill("remote-time", formatUtc(state.remote_utc), state.remote_utc ? "green" : "amber");
 
     const timeSource = state.time_source ?? "unknown";

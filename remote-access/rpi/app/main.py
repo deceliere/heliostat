@@ -29,6 +29,8 @@ runtime_state = {
     "mqtt_connected": False,
     "remote_online": False,
     "mode": "unknown",
+    "tracking_model_stage": None,
+    "tracking_model_version": None,
     "pan_deg": None,
     "tilt_deg": None,
     "pan_target_deg": None,
@@ -50,6 +52,7 @@ runtime_state = {
     "scan_step_deg": None,
     "scan_dwell_ms": None,
     "scan_move_speed": None,
+    "auto_update_interval_ms": None,
     "scan_point_index": 0,
     "scan_points_total": 0,
     "scan_lock_valid": False,
@@ -79,6 +82,8 @@ runtime_state = {
     "predicted_tilt_deg": None,
     "pan_tracking_error_deg": None,
     "tilt_tracking_error_deg": None,
+    "torque_enabled": None,
+    "st3020_motion_stage": None,
 }
 
 PRESET_GROUPS = {"site_locations", "beam_directions"}
@@ -218,6 +223,8 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
         return
       set_state(
           mode=data.get("mode", "unknown"),
+          tracking_model_stage=data.get("tracking_model_stage"),
+          tracking_model_version=data.get("tracking_model_version"),
           pan_deg=data.get("pan_deg"),
           tilt_deg=data.get("tilt_deg"),
           pan_target_deg=data.get("pan_target_deg"),
@@ -239,6 +246,7 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           scan_step_deg=data.get("scan_step_deg"),
           scan_dwell_ms=data.get("scan_dwell_ms"),
           scan_move_speed=data.get("scan_move_speed"),
+          auto_update_interval_ms=data.get("auto_update_interval_ms"),
           scan_point_index=data.get("scan_point_index", 0),
           scan_points_total=data.get("scan_points_total", 0),
           scan_lock_valid=bool(data.get("scan_lock_valid", False)),
@@ -266,6 +274,8 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           predicted_tilt_deg=data.get("predicted_tilt_deg"),
           pan_tracking_error_deg=data.get("pan_tracking_error_deg"),
           tilt_tracking_error_deg=data.get("tilt_tracking_error_deg"),
+          torque_enabled=data.get("torque_enabled"),
+          st3020_motion_stage=data.get("st3020_motion_stage"),
           last_state_update_unix_ms=int(round(time.time() * 1000)),
           remote_online=bool(data.get("mqtt_ok", get_state().get("remote_online", False))),
       )

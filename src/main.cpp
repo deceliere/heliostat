@@ -84,9 +84,17 @@ constexpr uint8_t ST3020_PAN_ID = 1;
 constexpr uint8_t ST3020_TILT_ID = 2;
 constexpr uint16_t ST3020_DEFAULT_SPEED = 4000;
 constexpr uint8_t ST3020_DEFAULT_ACC = 50;
-constexpr bool ST3020_HOLD_TORQUE_ENABLED = true;
+constexpr bool ST3020_HOLD_TORQUE_ENABLED = false;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
-constexpr uint32_t ST3020_TORQUE_RELEASE_IDLE_MS = 250;
+constexpr int ST3020_SETTLE_TOLERANCE_POS = 2;
+constexpr uint8_t ST3020_MAX_FINAL_CORRECTIONS = 2;
+constexpr uint32_t ST3020_MOVE_SETTLE_MS = 120;
+constexpr uint32_t ST3020_MOVE_TIMEOUT_MARGIN_MS = 250;
+constexpr uint32_t ST3020_MOVE_MIN_COMMAND_MS = 80;
+constexpr bool ST3020_AUTO_APPROACH_ENABLED = true;
+constexpr float ST3020_AUTO_APPROACH_PAN_OFFSET_DEG = -5.0f;
+constexpr float ST3020_AUTO_APPROACH_TILT_OFFSET_DEG = 5.0f;
+constexpr bool ST3020_FEEDBACK_CORRECTION_ENABLED = true;
 constexpr float ST3020_PAN_SIGN = 1.0f;
 constexpr float ST3020_TILT_SIGN = -1.0f;
 constexpr int ST3020_PAN_POS_AT_90_DEG = 1024;
@@ -112,6 +120,9 @@ constexpr float SPEED_CURVE_EXPONENT = 1.8f;
 constexpr float HELIOSTAT_LATITUDE_DEG = 46.200316f;
 constexpr float HELIOSTAT_LONGITUDE_DEG = 6.139345f;
 constexpr time_t HELIOSTAT_START_UNIX_TIME_UTC = 0;
+constexpr const char* TRACKING_MODEL_STAGE = "beta";
+constexpr const char* TRACKING_MODEL_VERSION = "south180-beta-1";
+constexpr uint32_t AUTO_TARGET_UPDATE_INTERVAL_MS = 5000;
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 64;
 constexpr uint32_t REMOTE_STATE_PUBLISH_MS = 150;
 constexpr uint32_t REMOTE_WIFI_RETRY_MS = 10000;
@@ -192,6 +203,12 @@ enum ScanStage : uint8_t {
   SCAN_STAGE_MICRO = 3,
 };
 
+enum St3020MotionStage : uint8_t {
+  ST3020_MOTION_IDLE = 0,
+  ST3020_MOTION_APPROACH = 1,
+  ST3020_MOTION_FINAL = 2,
+};
+
 const char* controlModeName(ControlMode mode) {
   switch (mode) {
     case CONTROL_MODE_MANUAL:
@@ -265,6 +282,15 @@ int st3020PanVoltageTenths = -1;
 int st3020TiltVoltageTenths = -1;
 int st3020LastCommandedPanPosition = -1;
 int st3020LastCommandedTiltPosition = -1;
+St3020MotionStage st3020MotionStage = ST3020_MOTION_IDLE;
+int st3020MotionCurrentPanPosition = -1;
+int st3020MotionCurrentTiltPosition = -1;
+int st3020MotionFinalPanPosition = -1;
+int st3020MotionFinalTiltPosition = -1;
+uint16_t st3020MotionSpeed = ST3020_DEFAULT_SPEED;
+uint32_t st3020MotionDeadlineMs = 0;
+uint32_t st3020MotionSettledSinceMs = 0;
+uint8_t st3020MotionCorrectionAttempts = 0;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
 #endif
@@ -307,6 +333,7 @@ bool sunTimeValid = false;
 Vec3 targetDirection = {0.0f, 0.0f, 0.0f};
 time_t heliostatStartUnixTimeUtc = HELIOSTAT_START_UNIX_TIME_UTC;
 uint32_t heliostatTimeBaseMillis = 0;
+uint32_t lastAutoTargetUpdateMs = 0;
 float capturedPanAngleDeg = PAN_START_DEG;
 float capturedTiltAngleDeg = TILT_START_DEG;
 float heliostatLatitudeDeg = HELIOSTAT_LATITUDE_DEG;
@@ -975,6 +1002,46 @@ void refreshSt3020TorqueState() {
   // Serial.printf("ST3020 torque state: pan_rb=%d | tilt_rb=%d\n", panReadback, tiltReadback);
 }
 
+void setSt3020TorqueEnabled(bool enabled) {
+  st3020Bus.EnableTorque(ST3020_PAN_ID, enabled ? 1 : 0);
+  st3020Bus.EnableTorque(ST3020_TILT_ID, enabled ? 1 : 0);
+  refreshSt3020TorqueState();
+}
+
+bool st3020FeedbackNearTarget(int panTargetPosition,
+                              int tiltTargetPosition,
+                              int tolerancePosition = ST3020_SETTLE_TOLERANCE_POS) {
+  return st3020PanFeedbackValid &&
+         st3020TiltFeedbackValid &&
+         abs(st3020PanFeedbackPosition - panTargetPosition) <= tolerancePosition &&
+         abs(st3020TiltFeedbackPosition - tiltTargetPosition) <= tolerancePosition;
+}
+
+uint32_t st3020EstimatedMoveDurationMs(int fromPanPosition,
+                                       int toPanPosition,
+                                       int fromTiltPosition,
+                                       int toTiltPosition,
+                                       uint16_t speed) {
+  const int deltaPosition =
+      max(abs(toPanPosition - fromPanPosition), abs(toTiltPosition - fromTiltPosition));
+  const uint32_t motionMs =
+      static_cast<uint32_t>((1000UL * static_cast<uint32_t>(max(1, deltaPosition))) /
+                            max<uint16_t>(1, speed));
+  return max<uint32_t>(ST3020_MOVE_MIN_COMMAND_MS, motionMs + ST3020_MOVE_TIMEOUT_MARGIN_MS);
+}
+
+void clearSt3020MotionState(bool releaseTorque = true) {
+  st3020MotionStage = ST3020_MOTION_IDLE;
+  st3020MotionCurrentPanPosition = -1;
+  st3020MotionCurrentTiltPosition = -1;
+  st3020MotionDeadlineMs = 0;
+  st3020MotionSettledSinceMs = 0;
+  st3020MotionCorrectionAttempts = 0;
+  if (releaseTorque && !ST3020_HOLD_TORQUE_ENABLED) {
+    setSt3020TorqueEnabled(false);
+  }
+}
+
 void updateSt3020Feedback(bool force = false) {
   const uint32_t nowMs = millis();
   if (!force && (nowMs - lastSt3020FeedbackMs) < ST3020_FEEDBACK_POLL_MS) {
@@ -1007,6 +1074,178 @@ void updateSt3020Feedback(bool force = false) {
   refreshSt3020TorqueState();
 }
 
+void sendSt3020PositionCommand(int panPosition,
+                               int tiltPosition,
+                               uint16_t panSpeed,
+                               uint16_t tiltSpeed,
+                               bool force = false) {
+  lastPanPulseUs = panPosition;
+  lastTiltPulseUs = tiltPosition;
+  if (!force &&
+      panPosition == st3020LastCommandedPanPosition &&
+      tiltPosition == st3020LastCommandedTiltPosition) {
+    return;
+  }
+
+  lastSt3020MotionCommandMs = millis();
+  const int panResult =
+      st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), panSpeed, ST3020_DEFAULT_ACC);
+  const int tiltResult =
+      st3020Bus.WritePosEx(ST3020_TILT_ID, static_cast<s16>(tiltPosition), tiltSpeed, ST3020_DEFAULT_ACC);
+  st3020LastCommandedPanPosition = panPosition;
+  st3020LastCommandedTiltPosition = tiltPosition;
+
+  static uint32_t lastSt3020LogMs = 0;
+  const uint32_t nowMs = millis();
+  if ((nowMs - lastSt3020LogMs) >= 1000 || force) {
+    lastSt3020LogMs = nowMs;
+    Serial.printf("ST3020 write: pan=%d speed=%u r=%d | tilt=%d speed=%u r=%d\n",
+                  panPosition, static_cast<unsigned>(panSpeed), panResult,
+                  tiltPosition, static_cast<unsigned>(tiltSpeed), tiltResult);
+  }
+}
+
+void beginSt3020MotionStage(St3020MotionStage stage,
+                            int panPosition,
+                            int tiltPosition,
+                            uint16_t speed,
+                            uint32_t nowMs,
+                            bool force = false) {
+  int referencePanPosition = st3020LastCommandedPanPosition;
+  int referenceTiltPosition = st3020LastCommandedTiltPosition;
+  if (st3020PanFeedbackValid) {
+    referencePanPosition = st3020PanFeedbackPosition;
+  } else if (referencePanPosition < 0) {
+    referencePanPosition = st3020PanPositionFromAngleDeg(panAngleDeg);
+  }
+  if (st3020TiltFeedbackValid) {
+    referenceTiltPosition = st3020TiltFeedbackPosition;
+  } else if (referenceTiltPosition < 0) {
+    referenceTiltPosition = st3020TiltPositionFromAngleDeg(tiltAngleDeg);
+  }
+
+  st3020MotionStage = stage;
+  st3020MotionCurrentPanPosition = panPosition;
+  st3020MotionCurrentTiltPosition = tiltPosition;
+  st3020MotionSpeed = speed;
+  st3020MotionSettledSinceMs = 0;
+  st3020MotionDeadlineMs =
+      nowMs + st3020EstimatedMoveDurationMs(referencePanPosition, panPosition,
+                                            referenceTiltPosition, tiltPosition, speed);
+  sendSt3020PositionCommand(panPosition, tiltPosition, speed, speed, force);
+}
+
+void scheduleSt3020AutoMotion(uint32_t nowMs) {
+  st3020MotionFinalPanPosition = st3020PanPositionFromAngleDeg(panTargetDeg);
+  st3020MotionFinalTiltPosition = st3020TiltPositionFromAngleDeg(tiltTargetDeg);
+  st3020MotionCorrectionAttempts = 0;
+
+  if (ST3020_AUTO_APPROACH_ENABLED) {
+    const float approachPanDeg = constrain(panTargetDeg + ST3020_AUTO_APPROACH_PAN_OFFSET_DEG,
+                                           panMinLimitDeg(), panMaxLimitDeg());
+    const float targetTiltExternalDeg = tiltExternalFromInternalDeg(tiltTargetDeg);
+    const float approachTiltExternalDeg =
+        constrain(targetTiltExternalDeg + ST3020_AUTO_APPROACH_TILT_OFFSET_DEG,
+                  tiltExternalMinLimitDeg(), tiltExternalMaxLimitDeg());
+    const int approachPanPosition = st3020PanPositionFromAngleDeg(approachPanDeg);
+    const int approachTiltPosition =
+        st3020TiltPositionFromAngleDeg(tiltInternalFromExternalDeg(approachTiltExternalDeg));
+    if (approachPanPosition != st3020MotionFinalPanPosition ||
+        approachTiltPosition != st3020MotionFinalTiltPosition) {
+      beginSt3020MotionStage(ST3020_MOTION_APPROACH,
+                             approachPanPosition,
+                             approachTiltPosition,
+                             ST3020_DEFAULT_SPEED,
+                             nowMs);
+      return;
+    }
+  }
+
+  beginSt3020MotionStage(ST3020_MOTION_FINAL,
+                         st3020MotionFinalPanPosition,
+                         st3020MotionFinalTiltPosition,
+                         ST3020_DEFAULT_SPEED,
+                         nowMs);
+}
+
+void serviceSt3020AutoMotion(uint32_t nowMs) {
+  const int desiredFinalPanPosition = st3020PanPositionFromAngleDeg(panTargetDeg);
+  const int desiredFinalTiltPosition = st3020TiltPositionFromAngleDeg(tiltTargetDeg);
+  const bool finalTargetChanged =
+      desiredFinalPanPosition != st3020MotionFinalPanPosition ||
+      desiredFinalTiltPosition != st3020MotionFinalTiltPosition;
+  const bool needsFeedbackCorrection =
+      st3020PanFeedbackValid &&
+      st3020TiltFeedbackValid &&
+      !st3020FeedbackNearTarget(desiredFinalPanPosition, desiredFinalTiltPosition);
+
+  if (st3020MotionStage == ST3020_MOTION_IDLE) {
+    if (finalTargetChanged || needsFeedbackCorrection) {
+      scheduleSt3020AutoMotion(nowMs);
+    } else {
+      if (st3020TorqueEnabled && !ST3020_HOLD_TORQUE_ENABLED) {
+        setSt3020TorqueEnabled(false);
+      }
+      return;
+    }
+  } else if (finalTargetChanged) {
+    scheduleSt3020AutoMotion(nowMs);
+  }
+
+  if (st3020MotionStage == ST3020_MOTION_IDLE) {
+    return;
+  }
+
+  if (st3020FeedbackNearTarget(st3020MotionCurrentPanPosition, st3020MotionCurrentTiltPosition)) {
+    if (st3020MotionSettledSinceMs == 0) {
+      st3020MotionSettledSinceMs = nowMs;
+    } else if ((nowMs - st3020MotionSettledSinceMs) >= ST3020_MOVE_SETTLE_MS) {
+      if (st3020MotionStage == ST3020_MOTION_APPROACH) {
+        beginSt3020MotionStage(ST3020_MOTION_FINAL,
+                               st3020MotionFinalPanPosition,
+                               st3020MotionFinalTiltPosition,
+                               ST3020_DEFAULT_SPEED,
+                               nowMs);
+        return;
+      }
+      clearSt3020MotionState(true);
+      return;
+    }
+  } else {
+    st3020MotionSettledSinceMs = 0;
+  }
+
+  if (nowMs < st3020MotionDeadlineMs) {
+    return;
+  }
+
+  if (st3020MotionStage == ST3020_MOTION_APPROACH) {
+    beginSt3020MotionStage(ST3020_MOTION_FINAL,
+                           st3020MotionFinalPanPosition,
+                           st3020MotionFinalTiltPosition,
+                           ST3020_DEFAULT_SPEED,
+                           nowMs,
+                           true);
+    return;
+  }
+
+  if (ST3020_FEEDBACK_CORRECTION_ENABLED &&
+      st3020PanFeedbackValid &&
+      st3020TiltFeedbackValid &&
+      st3020MotionCorrectionAttempts < ST3020_MAX_FINAL_CORRECTIONS) {
+    ++st3020MotionCorrectionAttempts;
+    beginSt3020MotionStage(ST3020_MOTION_FINAL,
+                           st3020MotionFinalPanPosition,
+                           st3020MotionFinalTiltPosition,
+                           ST3020_DEFAULT_SPEED,
+                           nowMs,
+                           true);
+    return;
+  }
+
+  clearSt3020MotionState(true);
+}
+
 void beginRemoteActuatorsSt3020() {
   Serial1.begin(ST3020_UART_BAUD, SERIAL_8N1, ST3020_UART_RX_PIN, ST3020_UART_TX_PIN);
   st3020Bus.pSerial = &Serial1;
@@ -1029,6 +1268,7 @@ void beginRemoteActuatorsSt3020() {
   Serial.printf("ST3020 feedback: pan=%d @ %.1fV | tilt=%d @ %.1fV\n",
                 st3020PanFeedbackPosition, static_cast<float>(st3020PanVoltageTenths) / 10.0f,
                 st3020TiltFeedbackPosition, static_cast<float>(st3020TiltVoltageTenths) / 10.0f);
+  clearSt3020MotionState(true);
 }
 
 void writeRemoteActuatorsSt3020() {
@@ -1040,27 +1280,7 @@ void writeRemoteActuatorsSt3020() {
     panSpeed = scanMoveSpeed;
     tiltSpeed = scanMoveSpeed;
   }
-  lastPanPulseUs = panPosition;
-  lastTiltPulseUs = tiltPosition;
-  if (panPosition == st3020LastCommandedPanPosition &&
-      tiltPosition == st3020LastCommandedTiltPosition) {
-    return;
-  }
-  lastSt3020MotionCommandMs = millis();
-  const int panResult =
-      st3020Bus.WritePosEx(ST3020_PAN_ID, static_cast<s16>(panPosition), panSpeed, ST3020_DEFAULT_ACC);
-  const int tiltResult =
-      st3020Bus.WritePosEx(ST3020_TILT_ID, static_cast<s16>(tiltPosition), tiltSpeed, ST3020_DEFAULT_ACC);
-  st3020LastCommandedPanPosition = panPosition;
-  st3020LastCommandedTiltPosition = tiltPosition;
-  static uint32_t lastSt3020LogMs = 0;
-  const uint32_t nowMs = millis();
-  if ((nowMs - lastSt3020LogMs) >= 1000) {
-    lastSt3020LogMs = nowMs;
-    Serial.printf("ST3020 write: pan=%d speed=%u r=%d | tilt=%d speed=%u r=%d\n",
-                  panPosition, static_cast<unsigned>(panSpeed), panResult,
-                  tiltPosition, static_cast<unsigned>(tiltSpeed), tiltResult);
-  }
+  sendSt3020PositionCommand(panPosition, tiltPosition, panSpeed, tiltSpeed);
   updateSt3020Feedback();
 }
 
@@ -1189,6 +1409,8 @@ void publishRemoteState(bool force = false) {
 
   JsonDocument doc;
   doc["mode"] = controlModeName(controlMode);
+  doc["tracking_model_stage"] = TRACKING_MODEL_STAGE;
+  doc["tracking_model_version"] = TRACKING_MODEL_VERSION;
   doc["pan_deg"] = panAngleDeg;
   doc["tilt_deg"] = tiltExternalFromInternalDeg(tiltAngleDeg);
   doc["pan_target_deg"] = panTargetDeg;
@@ -1202,6 +1424,15 @@ void publishRemoteState(bool force = false) {
   doc["servo_backend"] = remoteActuatorBackendName();
   doc["torque_hold_enabled"] = ST3020_HOLD_TORQUE_ENABLED;
   doc["torque_enabled"] = st3020TorqueEnabled;
+  doc["st3020_motion_stage"] =
+      st3020MotionStage == ST3020_MOTION_APPROACH ? "approach" :
+      st3020MotionStage == ST3020_MOTION_FINAL ? "final" : "idle";
+  doc["auto_update_interval_ms"] = AUTO_TARGET_UPDATE_INTERVAL_MS;
+  doc["st3020_auto_approach_enabled"] = ST3020_AUTO_APPROACH_ENABLED;
+  doc["st3020_auto_approach_pan_offset_deg"] = ST3020_AUTO_APPROACH_PAN_OFFSET_DEG;
+  doc["st3020_auto_approach_tilt_offset_deg"] = ST3020_AUTO_APPROACH_TILT_OFFSET_DEG;
+  doc["st3020_feedback_correction_enabled"] = ST3020_FEEDBACK_CORRECTION_ENABLED;
+  doc["st3020_settle_tolerance_pos"] = ST3020_SETTLE_TOLERANCE_POS;
   doc["pan_feedback_ok"] = st3020PanFeedbackValid;
   doc["tilt_feedback_ok"] = st3020TiltFeedbackValid;
   if (st3020PanVoltageTenths >= 0) {
@@ -1797,22 +2028,35 @@ void updateHeliostatTracking(uint32_t nowMs) {
   }
 
   if (autoTrackEnabled) {
-    Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
-    if (lengthVec3(desiredNormal) > 0.0f) {
-      const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
-      if (dotVec3(currentNormal, desiredNormal) < 0.0f) {
-        desiredNormal = scaleVec3(desiredNormal, -1.0f);
+    const bool enteringAuto = (controlMode != CONTROL_MODE_AUTO_TRACK);
+    const bool updateTargetNow =
+        enteringAuto || lastAutoTargetUpdateMs == 0 ||
+        (nowMs - lastAutoTargetUpdateMs) >= AUTO_TARGET_UPDATE_INTERVAL_MS;
+    if (updateTargetNow) {
+      Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
+      if (lengthVec3(desiredNormal) > 0.0f) {
+        const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+        if (dotVec3(currentNormal, desiredNormal) < 0.0f) {
+          desiredNormal = scaleVec3(desiredNormal, -1.0f);
+        }
+        panTiltFromMirrorNormal(desiredNormal, panTargetDeg, tiltTargetDeg);
+        if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+          panTargetDeg = quantizeSt3020PanTargetDeg(panTargetDeg);
+          tiltTargetDeg = quantizeSt3020TiltTargetDeg(tiltTargetDeg);
+        }
+        lastAutoReferencePanDeg = panTargetDeg;
+        lastAutoReferenceTiltDeg = tiltTargetDeg;
+        lastAutoTargetUpdateMs = nowMs;
       }
-      panTiltFromMirrorNormal(desiredNormal, panTargetDeg, tiltTargetDeg);
-      if (controlMode != CONTROL_MODE_AUTO_TRACK) {
-        autoTrackStartUnixTimeUtc = unixTimeUtc;
-      }
-      lastAutoReferencePanDeg = panTargetDeg;
-      lastAutoReferenceTiltDeg = tiltTargetDeg;
-      controlMode = CONTROL_MODE_AUTO_TRACK;
     }
+    if (enteringAuto) {
+      autoTrackStartUnixTimeUtc = unixTimeUtc;
+    }
+    controlMode = CONTROL_MODE_AUTO_TRACK;
   } else if (controlMode == CONTROL_MODE_AUTO_TRACK) {
     controlMode = CONTROL_MODE_TARGET_CAPTURED;
+    lastAutoTargetUpdateMs = 0;
+    clearSt3020MotionState(true);
   }
 }
 
@@ -1905,6 +2149,13 @@ void moveServosTowardTargets(uint32_t nowMs) {
 
   if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
     updateSt3020Feedback();
+    if (controlMode == CONTROL_MODE_AUTO_TRACK && !scanActive) {
+      serviceSt3020AutoMotion(nowMs);
+      return;
+    }
+    if (st3020MotionStage != ST3020_MOTION_IDLE) {
+      clearSt3020MotionState(true);
+    }
     writeRemoteActuators();
     return;
   }
@@ -2493,7 +2744,7 @@ void printStatus(uint32_t nowMs) {
   const String remoteTimeText = formatUnixTimeUtc(remoteReportedUnixTimeUtc);
   if (SHOW_SERVO_PULSE_US_IN_LOGS) {
     Serial.printf(
-        "ROLE=controller | xbox=%s | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f us=%4d range=%d..%d | tilt=%7.3f us=%4d range=%d..%d | d_pan=%+7.3f d_tilt=%+7.3f | target=%s | sun_time=%s | remote_utc=%s | time_x=%.1f\n",
+        "ROLE=controller | xbox=%s | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f us=%4d range=%d..%d | tilt=%7.3f us=%4d range=%d..%d | d_pan=%+7.3f d_tilt=%+7.3f | target=%s | sun_time=%s | remote_utc=%s\n",
         xboxState,
         espNowPeerReady ? "ok" : "missing",
         lastSendOk ? "ok" : "pending",
@@ -2509,11 +2760,10 @@ void printStatus(uint32_t nowMs) {
         remoteReportedTiltTargetDeg - remoteReportedCapturedTiltAngleDeg,
         remoteReportedTargetDirectionValid ? "ok" : "missing",
         remoteReportedSunTimeValid ? "ok" : "missing",
-        remoteTimeText.c_str(),
-        remoteReportedTimeScale);
+        remoteTimeText.c_str());
   } else {
     Serial.printf(
-        "ROLE=controller | xbox=%s | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f | tilt=%7.3f | d_pan=%+7.3f d_tilt=%+7.3f | target=%s | sun_time=%s | remote_utc=%s | time_x=%.1f\n",
+        "ROLE=controller | xbox=%s | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f | tilt=%7.3f | d_pan=%+7.3f d_tilt=%+7.3f | target=%s | sun_time=%s | remote_utc=%s\n",
         xboxState,
         espNowPeerReady ? "ok" : "missing",
         lastSendOk ? "ok" : "pending",
@@ -2525,8 +2775,7 @@ void printStatus(uint32_t nowMs) {
         remoteReportedTiltTargetDeg - remoteReportedCapturedTiltAngleDeg,
         remoteReportedTargetDirectionValid ? "ok" : "missing",
         remoteReportedSunTimeValid ? "ok" : "missing",
-        remoteTimeText.c_str(),
-        remoteReportedTimeScale);
+        remoteTimeText.c_str());
   }
 #else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
@@ -2616,7 +2865,7 @@ void setup() {
   Serial.println("Remote peer MAC=auto");
   Serial.printf("CLEAR_XBOX_BONDS_ON_BOOT=%s\n", CLEAR_XBOX_BONDS_ON_BOOT ? "true" : "false");
   Serial.println("Xbox node: left stick = target angle movement, button A = recenter, LB = slow manual mode.");
-  Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
+  Serial.println("Pan model reference: pan=180 deg means mirror normal points south.");
   Serial.println("Button X captures the reflected target. Button Y toggles heliostat auto-track. Button B prints TRACK_DIAG.");
   Serial.println("Serial: T=<unix_utc_seconds>, TIME?.");
   Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
@@ -2630,7 +2879,7 @@ void setup() {
     Serial.printf("Servos: pan GPIO=%d | tilt GPIO=%d | %d Hz\n",
                   PAN_SERVO_PIN, TILT_SERVO_PIN, SERVO_FREQUENCY_HZ);
   }
-  Serial.println("Pan model reference: pan=90 deg means mirror normal points south.");
+  Serial.println("Pan model reference: pan=180 deg means mirror normal points south.");
   Serial.printf("Tilt model/servo: model %.1f deg -> servo %.1f deg | offset=%+.1f deg\n",
                 TILT_START_DEG, TILT_SERVO_AT_MODEL_HORIZON_DEG, TILT_SERVO_OFFSET_DEG);
   Serial.printf("Servo command step: %d us\n", SERVO_COMMAND_STEP_US);
