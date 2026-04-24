@@ -87,11 +87,12 @@ constexpr uint8_t ST3020_DEFAULT_ACC = 50;
 constexpr bool ST3020_HOLD_TORQUE_ENABLED = false;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
 constexpr int ST3020_SETTLE_TOLERANCE_POS = 2;
-constexpr uint8_t ST3020_MAX_FINAL_CORRECTIONS = 2;
+constexpr uint8_t ST3020_MAX_FINAL_CORRECTIONS = 8;
+constexpr int ST3020_FEEDBACK_TRIM_STEP_POS = 3;
 constexpr uint32_t ST3020_MOVE_SETTLE_MS = 120;
 constexpr uint32_t ST3020_MOVE_TIMEOUT_MARGIN_MS = 250;
 constexpr uint32_t ST3020_MOVE_MIN_COMMAND_MS = 80;
-constexpr bool ST3020_AUTO_APPROACH_ENABLED = true;
+constexpr bool ST3020_AUTO_APPROACH_ENABLED = false;
 constexpr float ST3020_AUTO_APPROACH_PAN_OFFSET_DEG = -5.0f;
 constexpr float ST3020_AUTO_APPROACH_TILT_OFFSET_DEG = 5.0f;
 constexpr bool ST3020_FEEDBACK_CORRECTION_ENABLED = true;
@@ -1030,6 +1031,16 @@ uint32_t st3020EstimatedMoveDurationMs(int fromPanPosition,
   return max<uint32_t>(ST3020_MOVE_MIN_COMMAND_MS, motionMs + ST3020_MOVE_TIMEOUT_MARGIN_MS);
 }
 
+int st3020StepPositionToward(int currentPosition, int targetPosition, int maxStepPosition) {
+  if (currentPosition < targetPosition) {
+    return min(currentPosition + maxStepPosition, targetPosition);
+  }
+  if (currentPosition > targetPosition) {
+    return max(currentPosition - maxStepPosition, targetPosition);
+  }
+  return currentPosition;
+}
+
 void clearSt3020MotionState(bool releaseTorque = true) {
   st3020MotionStage = ST3020_MOTION_IDLE;
   st3020MotionCurrentPanPosition = -1;
@@ -1168,6 +1179,28 @@ void scheduleSt3020AutoMotion(uint32_t nowMs) {
                          nowMs);
 }
 
+void beginSt3020FeedbackTrimStep(uint32_t nowMs) {
+  int referencePanPosition = st3020PanFeedbackValid ? st3020PanFeedbackPosition : st3020MotionCurrentPanPosition;
+  int referenceTiltPosition = st3020TiltFeedbackValid ? st3020TiltFeedbackPosition : st3020MotionCurrentTiltPosition;
+  if (referencePanPosition < 0) {
+    referencePanPosition = st3020MotionFinalPanPosition;
+  }
+  if (referenceTiltPosition < 0) {
+    referenceTiltPosition = st3020MotionFinalTiltPosition;
+  }
+
+  const int trimPanPosition =
+      st3020StepPositionToward(referencePanPosition, st3020MotionFinalPanPosition, ST3020_FEEDBACK_TRIM_STEP_POS);
+  const int trimTiltPosition =
+      st3020StepPositionToward(referenceTiltPosition, st3020MotionFinalTiltPosition, ST3020_FEEDBACK_TRIM_STEP_POS);
+  beginSt3020MotionStage(ST3020_MOTION_FINAL,
+                         trimPanPosition,
+                         trimTiltPosition,
+                         ST3020_DEFAULT_SPEED,
+                         nowMs,
+                         true);
+}
+
 void serviceSt3020AutoMotion(uint32_t nowMs) {
   const int desiredFinalPanPosition = st3020PanPositionFromAngleDeg(panTargetDeg);
   const int desiredFinalTiltPosition = st3020TiltPositionFromAngleDeg(tiltTargetDeg);
@@ -1178,10 +1211,18 @@ void serviceSt3020AutoMotion(uint32_t nowMs) {
       st3020PanFeedbackValid &&
       st3020TiltFeedbackValid &&
       !st3020FeedbackNearTarget(desiredFinalPanPosition, desiredFinalTiltPosition);
+  const bool feedbackNearCurrentTarget =
+      st3020FeedbackNearTarget(st3020MotionCurrentPanPosition, st3020MotionCurrentTiltPosition);
+  const bool feedbackNearFinalTarget =
+      st3020FeedbackNearTarget(st3020MotionFinalPanPosition, st3020MotionFinalTiltPosition);
 
   if (st3020MotionStage == ST3020_MOTION_IDLE) {
-    if (finalTargetChanged || needsFeedbackCorrection) {
+    if (finalTargetChanged) {
       scheduleSt3020AutoMotion(nowMs);
+    } else if (needsFeedbackCorrection) {
+      st3020MotionFinalPanPosition = desiredFinalPanPosition;
+      st3020MotionFinalTiltPosition = desiredFinalTiltPosition;
+      beginSt3020FeedbackTrimStep(nowMs);
     } else {
       if (st3020TorqueEnabled && !ST3020_HOLD_TORQUE_ENABLED) {
         setSt3020TorqueEnabled(false);
@@ -1196,7 +1237,7 @@ void serviceSt3020AutoMotion(uint32_t nowMs) {
     return;
   }
 
-  if (st3020FeedbackNearTarget(st3020MotionCurrentPanPosition, st3020MotionCurrentTiltPosition)) {
+  if (feedbackNearCurrentTarget) {
     if (st3020MotionSettledSinceMs == 0) {
       st3020MotionSettledSinceMs = nowMs;
     } else if ((nowMs - st3020MotionSettledSinceMs) >= ST3020_MOVE_SETTLE_MS) {
@@ -1206,6 +1247,16 @@ void serviceSt3020AutoMotion(uint32_t nowMs) {
                                st3020MotionFinalTiltPosition,
                                ST3020_DEFAULT_SPEED,
                                nowMs);
+        return;
+      }
+      if (feedbackNearFinalTarget) {
+        clearSt3020MotionState(true);
+        return;
+      }
+      if (ST3020_FEEDBACK_CORRECTION_ENABLED &&
+          st3020MotionCorrectionAttempts < ST3020_MAX_FINAL_CORRECTIONS) {
+        ++st3020MotionCorrectionAttempts;
+        beginSt3020FeedbackTrimStep(nowMs);
         return;
       }
       clearSt3020MotionState(true);
@@ -1234,12 +1285,7 @@ void serviceSt3020AutoMotion(uint32_t nowMs) {
       st3020TiltFeedbackValid &&
       st3020MotionCorrectionAttempts < ST3020_MAX_FINAL_CORRECTIONS) {
     ++st3020MotionCorrectionAttempts;
-    beginSt3020MotionStage(ST3020_MOTION_FINAL,
-                           st3020MotionFinalPanPosition,
-                           st3020MotionFinalTiltPosition,
-                           ST3020_DEFAULT_SPEED,
-                           nowMs,
-                           true);
+    beginSt3020FeedbackTrimStep(nowMs);
     return;
   }
 
@@ -1421,6 +1467,26 @@ void publishRemoteState(bool force = false) {
   doc["tilt_max_deg"] = tiltExternalMaxLimitDeg();
   doc["pan_pos"] = lastPanPulseUs;
   doc["tilt_pos"] = lastTiltPulseUs;
+  if (st3020LastCommandedPanPosition >= 0) {
+    doc["pan_command_pos"] = st3020LastCommandedPanPosition;
+  } else {
+    doc["pan_command_pos"] = nullptr;
+  }
+  if (st3020LastCommandedTiltPosition >= 0) {
+    doc["tilt_command_pos"] = st3020LastCommandedTiltPosition;
+  } else {
+    doc["tilt_command_pos"] = nullptr;
+  }
+  if (st3020PanFeedbackValid) {
+    doc["pan_feedback_pos"] = st3020PanFeedbackPosition;
+  } else {
+    doc["pan_feedback_pos"] = nullptr;
+  }
+  if (st3020TiltFeedbackValid) {
+    doc["tilt_feedback_pos"] = st3020TiltFeedbackPosition;
+  } else {
+    doc["tilt_feedback_pos"] = nullptr;
+  }
   doc["servo_backend"] = remoteActuatorBackendName();
   doc["torque_hold_enabled"] = ST3020_HOLD_TORQUE_ENABLED;
   doc["torque_enabled"] = st3020TorqueEnabled;
@@ -1432,6 +1498,7 @@ void publishRemoteState(bool force = false) {
   doc["st3020_auto_approach_pan_offset_deg"] = ST3020_AUTO_APPROACH_PAN_OFFSET_DEG;
   doc["st3020_auto_approach_tilt_offset_deg"] = ST3020_AUTO_APPROACH_TILT_OFFSET_DEG;
   doc["st3020_feedback_correction_enabled"] = ST3020_FEEDBACK_CORRECTION_ENABLED;
+  doc["st3020_feedback_trim_step_pos"] = ST3020_FEEDBACK_TRIM_STEP_POS;
   doc["st3020_settle_tolerance_pos"] = ST3020_SETTLE_TOLERANCE_POS;
   doc["pan_feedback_ok"] = st3020PanFeedbackValid;
   doc["tilt_feedback_ok"] = st3020TiltFeedbackValid;
