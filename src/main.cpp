@@ -133,7 +133,7 @@ constexpr uint32_t REMOTE_MQTT_RETRY_MS = 5000;
 constexpr uint32_t REMOTE_NTP_RETRY_MS = 15000;
 constexpr uint32_t REMOTE_NTP_RESYNC_MS = 60000;
 constexpr time_t MIN_VALID_UNIX_TIME_UTC = 1704067200;
-constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 2048;
+constexpr uint16_t REMOTE_MQTT_BUFFER_SIZE = 4096;
 constexpr float SCAN_SETTLE_TOLERANCE_DEG = 0.35f;
 constexpr float SCAN_COARSE_RANGE_PAN_DEG = 6.0f;
 constexpr float SCAN_COARSE_RANGE_TILT_DEG = 6.0f;
@@ -297,6 +297,8 @@ uint8_t st3020MotionCorrectionAttempts = 0;
 uint8_t st3020MotionFeedbackOvershootCount = 0;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
+bool espNowAutoTrackFlagSeen = false;
+bool lastEspNowAutoTrackFlag = false;
 #endif
 
 float panAngleDeg = PAN_START_DEG;
@@ -2780,9 +2782,23 @@ void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
     return;
   }
 
-  recenterRequested = (packet.reserved[0] & PACKET_FLAG_RECENTER) != 0;
-  captureTargetRequested = (packet.reserved[0] & PACKET_FLAG_CAPTURE_TARGET) != 0;
-  autoTrackEnabled = (packet.reserved[0] & PACKET_FLAG_AUTO_TRACK) != 0;
+  const bool packetRecenterRequested = (packet.reserved[0] & PACKET_FLAG_RECENTER) != 0;
+  const bool packetCaptureTargetRequested = (packet.reserved[0] & PACKET_FLAG_CAPTURE_TARGET) != 0;
+  const bool packetAutoTrackEnabled = (packet.reserved[0] & PACKET_FLAG_AUTO_TRACK) != 0;
+
+  // Latch one-shot controller actions so they are not lost if the next packet clears the bit
+  // before the main loop has processed them.
+  recenterRequested = recenterRequested || packetRecenterRequested;
+  captureTargetRequested = captureTargetRequested || packetCaptureTargetRequested;
+
+  // Treat ESP-NOW auto-track as an edge-driven intent. This avoids idle packets from forcing
+  // MQTT/UI-triggered auto mode back to manual, while still allowing controller toggles to apply.
+  if (!espNowAutoTrackFlagSeen || packetAutoTrackEnabled != lastEspNowAutoTrackFlag) {
+    autoTrackEnabled = packetAutoTrackEnabled;
+    lastEspNowAutoTrackFlag = packetAutoTrackEnabled;
+    espNowAutoTrackFlagSeen = true;
+  }
+
   precisionManualMode = (packet.reserved[0] & PACKET_FLAG_PRECISION) != 0;
   remotePanInput = constrain(packet.panInput, -1.0f, 1.0f);
   remoteTiltInput = constrain(packet.tiltInput, -1.0f, 1.0f);
