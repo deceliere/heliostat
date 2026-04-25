@@ -149,6 +149,13 @@ function formatAngleValue(value, suffix = "°") {
   return `${value.toFixed(2)}${suffix}`;
 }
 
+function formatPositionValue(value) {
+  if (typeof value !== "number") {
+    return "—";
+  }
+  return `${Math.round(value)}`;
+}
+
 function voltageTone(voltage) {
   if (typeof voltage !== "number") {
     return "amber";
@@ -958,6 +965,56 @@ async function refreshUi() {
     } else {
       setStatusPill("site-gps", "Unknown", "amber");
     }
+
+    setStatusPill("cal-pan-angle", formatAngleValue(state.pan_deg), typeof state.pan_deg === "number" ? "slate" : "amber");
+    setStatusPill("cal-tilt-angle", formatAngleValue(state.tilt_deg), typeof state.tilt_deg === "number" ? "slate" : "amber");
+
+    const hasPanServoState = typeof state.pan_command_pos === "number" || typeof state.pan_feedback_pos === "number";
+    const hasTiltServoState = typeof state.tilt_command_pos === "number" || typeof state.tilt_feedback_pos === "number";
+    setStatusPill(
+      "cal-pan-pos-state",
+      `${formatPositionValue(state.pan_command_pos)} / ${formatPositionValue(state.pan_feedback_pos)}`,
+      hasPanServoState ? "slate" : "amber"
+    );
+    setStatusPill(
+      "cal-tilt-pos-state",
+      `${formatPositionValue(state.tilt_command_pos)} / ${formatPositionValue(state.tilt_feedback_pos)}`,
+      hasTiltServoState ? "slate" : "amber"
+    );
+
+    const panServoDelta =
+      typeof state.pan_command_pos === "number" && typeof state.pan_feedback_pos === "number"
+        ? state.pan_command_pos - state.pan_feedback_pos
+        : null;
+    const tiltServoDelta =
+      typeof state.tilt_command_pos === "number" && typeof state.tilt_feedback_pos === "number"
+        ? state.tilt_command_pos - state.tilt_feedback_pos
+        : null;
+    let servoDeltaTone = "amber";
+    if (typeof panServoDelta === "number" && typeof tiltServoDelta === "number") {
+      const maxDelta = Math.max(Math.abs(panServoDelta), Math.abs(tiltServoDelta));
+      servoDeltaTone = maxDelta <= 1 ? "green" : maxDelta <= 4 ? "amber" : "red";
+    }
+    setStatusPill(
+      "cal-servo-delta",
+      typeof panServoDelta === "number" && typeof tiltServoDelta === "number"
+        ? `${panServoDelta >= 0 ? "+" : ""}${panServoDelta} / ${tiltServoDelta >= 0 ? "+" : ""}${tiltServoDelta}`
+        : "Unknown",
+      servoDeltaTone
+    );
+
+    const motionStage = state.st3020_motion_stage ?? "unknown";
+    const motionText =
+      typeof state.torque_enabled === "boolean"
+        ? `${motionStage} | torque ${state.torque_enabled ? "on" : "off"}`
+        : motionStage;
+    const motionTone =
+      motionStage === "idle"
+        ? "slate"
+        : motionStage === "final" || motionStage === "trim"
+          ? "green"
+          : "amber";
+    setStatusPill("cal-servo-motion", motionText, motionText ? motionTone : "amber");
 
     const scanStage = state.scan_stage ?? "idle";
     const scanPaused = !!state.scan_paused;
