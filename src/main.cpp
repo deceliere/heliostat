@@ -91,10 +91,6 @@ constexpr float ST3020_TILT_CAL_EXT_90_DEG = 90.0f;
 constexpr int ST3020_TILT_POS_AT_EXT_0_DEG = 1024;
 constexpr int ST3020_TILT_POS_AT_EXT_45_DEG = 1528;
 constexpr int ST3020_TILT_POS_AT_EXT_90_DEG = 2038;
-constexpr int ST3020_PAN_POS_MIN = ST3020_PAN_POS_AT_90_DEG;
-constexpr int ST3020_PAN_POS_MAX = ST3020_PAN_POS_AT_270_DEG;
-constexpr int ST3020_TILT_POS_MIN = 0;
-constexpr int ST3020_TILT_POS_MAX = 4095;
 constexpr float ST3020_PAN_MIN_DEG = PAN_MIN_DEG;
 constexpr float ST3020_PAN_MAX_DEG = PAN_MAX_DEG;
 constexpr float ST3020_TILT_MIN_DEG = 90.0f;
@@ -211,10 +207,30 @@ struct Vec3 {
   float y;
   float z;
 };
+
+struct St3020Calibration {
+  int panPosAt90Deg;
+  int panPosAt180Deg;
+  int panPosAt270Deg;
+  int tiltPosAtExt0Deg;
+  int tiltPosAtExt45Deg;
+  int tiltPosAtExt90Deg;
+};
+
+constexpr St3020Calibration ST3020_DEFAULT_CALIBRATION = {
+    ST3020_PAN_POS_AT_90_DEG,
+    ST3020_PAN_POS_AT_180_DEG,
+    ST3020_PAN_POS_AT_270_DEG,
+    ST3020_TILT_POS_AT_EXT_0_DEG,
+    ST3020_TILT_POS_AT_EXT_45_DEG,
+    ST3020_TILT_POS_AT_EXT_90_DEG,
+};
+
 Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ800);
 Servo panServo;
 Servo tiltServo;
 SMS_STS st3020Bus;
+St3020Calibration st3020Calibration = ST3020_DEFAULT_CALIBRATION;
 bool st3020TorqueEnabled = false;
 bool st3020PanFeedbackValid = false;
 bool st3020TiltFeedbackValid = false;
@@ -696,6 +712,82 @@ float tiltExternalMaxLimitDeg() {
   return (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) ? ST3020_TILT_EXTERNAL_MAX_DEG : tiltMaxLimitDeg();
 }
 
+int st3020PanPositionMin() {
+  return min(st3020Calibration.panPosAt90Deg,
+             min(st3020Calibration.panPosAt180Deg, st3020Calibration.panPosAt270Deg));
+}
+
+int st3020PanPositionMax() {
+  return max(st3020Calibration.panPosAt90Deg,
+             max(st3020Calibration.panPosAt180Deg, st3020Calibration.panPosAt270Deg));
+}
+
+int st3020TiltPositionMin() {
+  return min(st3020Calibration.tiltPosAtExt0Deg,
+             min(st3020Calibration.tiltPosAtExt45Deg, st3020Calibration.tiltPosAtExt90Deg));
+}
+
+int st3020TiltPositionMax() {
+  return max(st3020Calibration.tiltPosAtExt0Deg,
+             max(st3020Calibration.tiltPosAtExt45Deg, st3020Calibration.tiltPosAtExt90Deg));
+}
+
+float st3020PanAngleDegFromPosition(int position);
+float st3020TiltAngleDegFromPosition(int position);
+float quantizeSt3020PanTargetDeg(float angleDeg);
+float quantizeSt3020TiltTargetDeg(float angleDeg);
+
+bool st3020CalibrationIsValid(const St3020Calibration& calibration) {
+  const bool panOrdered =
+      calibration.panPosAt90Deg < calibration.panPosAt180Deg &&
+      calibration.panPosAt180Deg < calibration.panPosAt270Deg;
+  const bool tiltOrdered =
+      calibration.tiltPosAtExt0Deg < calibration.tiltPosAtExt45Deg &&
+      calibration.tiltPosAtExt45Deg < calibration.tiltPosAtExt90Deg;
+  const bool valuesInRange =
+      calibration.panPosAt90Deg >= 0 && calibration.panPosAt90Deg <= 4095 &&
+      calibration.panPosAt180Deg >= 0 && calibration.panPosAt180Deg <= 4095 &&
+      calibration.panPosAt270Deg >= 0 && calibration.panPosAt270Deg <= 4095 &&
+      calibration.tiltPosAtExt0Deg >= 0 && calibration.tiltPosAtExt0Deg <= 4095 &&
+      calibration.tiltPosAtExt45Deg >= 0 && calibration.tiltPosAtExt45Deg <= 4095 &&
+      calibration.tiltPosAtExt90Deg >= 0 && calibration.tiltPosAtExt90Deg <= 4095;
+  return panOrdered && tiltOrdered && valuesInRange;
+}
+
+void refreshSt3020AnglesAndTargetsFromCalibration() {
+  if (st3020PanFeedbackValid) {
+    panAngleDeg = st3020PanAngleDegFromPosition(st3020PanFeedbackPosition);
+  }
+  if (st3020TiltFeedbackValid) {
+    tiltAngleDeg = st3020TiltAngleDegFromPosition(st3020TiltFeedbackPosition);
+  }
+  panTargetDeg = quantizeSt3020PanTargetDeg(panTargetDeg);
+  tiltTargetDeg = quantizeSt3020TiltTargetDeg(tiltTargetDeg);
+  capturedPanAngleDeg = quantizeSt3020PanTargetDeg(capturedPanAngleDeg);
+  capturedTiltAngleDeg = quantizeSt3020TiltTargetDeg(capturedTiltAngleDeg);
+  lastAutoReferencePanDeg = quantizeSt3020PanTargetDeg(lastAutoReferencePanDeg);
+  lastAutoReferenceTiltDeg = quantizeSt3020TiltTargetDeg(lastAutoReferenceTiltDeg);
+  scanCenterPanDeg = quantizeSt3020PanTargetDeg(scanCenterPanDeg);
+  scanCenterTiltDeg = quantizeSt3020TiltTargetDeg(scanCenterTiltDeg);
+  scanLockPanDeg = quantizeSt3020PanTargetDeg(scanLockPanDeg);
+  scanLockTiltDeg = quantizeSt3020TiltTargetDeg(scanLockTiltDeg);
+  approxTargetPanDeg = quantizeSt3020PanTargetDeg(approxTargetPanDeg);
+  approxTargetTiltDeg = quantizeSt3020TiltTargetDeg(approxTargetTiltDeg);
+  st3020LastCommandedPanPosition = -1;
+  st3020LastCommandedTiltPosition = -1;
+}
+
+bool setActiveSt3020Calibration(const St3020Calibration& calibration) {
+  if (!st3020CalibrationIsValid(calibration)) {
+    return false;
+  }
+  st3020Calibration = calibration;
+  if (REMOTE_ACTUATOR_BACKEND == REMOTE_ACTUATOR_BACKEND_ST3020) {
+    refreshSt3020AnglesAndTargetsFromCalibration();
+  }
+  return true;
+}
+
 int panAngleDegToLegacyPulseUs(float panDeg) {
   return quantizePulseUs(
       angleToPulseUs(panDeg, PAN_MIN_DEG, PAN_MAX_DEG,
@@ -712,12 +804,23 @@ int tiltAngleDegToLegacyPulseUs(float tiltDeg) {
 
 int st3020PanPositionFromAngleDeg(float angleDeg) {
   const float clamped = constrain(angleDeg, ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
-  const float stepsPerDeg =
-      static_cast<float>(ST3020_PAN_POS_AT_270_DEG - ST3020_PAN_POS_AT_180_DEG) / 90.0f;
-  const float signedOffsetDeg = (clamped - PAN_START_DEG) * ST3020_PAN_SIGN;
-  return constrain(
-      ST3020_PAN_POS_AT_180_DEG + static_cast<int>(lroundf(signedOffsetDeg * stepsPerDeg)),
-      ST3020_PAN_POS_MIN, ST3020_PAN_POS_MAX);
+  float position = 0.0f;
+  if (clamped <= PAN_START_DEG) {
+    const float segmentRatio =
+        (clamped - ST3020_PAN_MIN_DEG) /
+        (PAN_START_DEG - ST3020_PAN_MIN_DEG);
+    position = static_cast<float>(st3020Calibration.panPosAt90Deg) +
+               (segmentRatio * static_cast<float>(st3020Calibration.panPosAt180Deg -
+                                                  st3020Calibration.panPosAt90Deg));
+  } else {
+    const float segmentRatio =
+        (clamped - PAN_START_DEG) /
+        (ST3020_PAN_MAX_DEG - PAN_START_DEG);
+    position = static_cast<float>(st3020Calibration.panPosAt180Deg) +
+               (segmentRatio * static_cast<float>(st3020Calibration.panPosAt270Deg -
+                                                  st3020Calibration.panPosAt180Deg));
+  }
+  return constrain(static_cast<int>(lroundf(position)), st3020PanPositionMin(), st3020PanPositionMax());
 }
 
 int st3020TiltPositionFromAngleDeg(float angleDeg) {
@@ -731,44 +834,55 @@ int st3020TiltPositionFromAngleDeg(float angleDeg) {
     const float segmentRatio =
         (externalDeg - ST3020_TILT_CAL_EXT_0_DEG) /
         (ST3020_TILT_CAL_EXT_45_DEG - ST3020_TILT_CAL_EXT_0_DEG);
-    position = static_cast<float>(ST3020_TILT_POS_AT_EXT_0_DEG) +
-               (segmentRatio * static_cast<float>(ST3020_TILT_POS_AT_EXT_45_DEG -
-                                                  ST3020_TILT_POS_AT_EXT_0_DEG));
+    position = static_cast<float>(st3020Calibration.tiltPosAtExt0Deg) +
+               (segmentRatio * static_cast<float>(st3020Calibration.tiltPosAtExt45Deg -
+                                                  st3020Calibration.tiltPosAtExt0Deg));
   } else {
     const float segmentRatio =
         (externalDeg - ST3020_TILT_CAL_EXT_45_DEG) /
         (ST3020_TILT_CAL_EXT_90_DEG - ST3020_TILT_CAL_EXT_45_DEG);
-    position = static_cast<float>(ST3020_TILT_POS_AT_EXT_45_DEG) +
-               (segmentRatio * static_cast<float>(ST3020_TILT_POS_AT_EXT_90_DEG -
-                                                  ST3020_TILT_POS_AT_EXT_45_DEG));
+    position = static_cast<float>(st3020Calibration.tiltPosAtExt45Deg) +
+               (segmentRatio * static_cast<float>(st3020Calibration.tiltPosAtExt90Deg -
+                                                  st3020Calibration.tiltPosAtExt45Deg));
   }
 
-  return constrain(static_cast<int>(lroundf(position)), ST3020_TILT_POS_MIN, ST3020_TILT_POS_MAX);
+  return constrain(static_cast<int>(lroundf(position)), st3020TiltPositionMin(), st3020TiltPositionMax());
 }
 
 float st3020PanAngleDegFromPosition(int position) {
-  const float clamped = static_cast<float>(constrain(position, ST3020_PAN_POS_MIN, ST3020_PAN_POS_MAX));
-  const float stepsPerDeg =
-      static_cast<float>(ST3020_PAN_POS_AT_270_DEG - ST3020_PAN_POS_AT_180_DEG) / 90.0f;
-  const float signedOffsetDeg =
-      (clamped - static_cast<float>(ST3020_PAN_POS_AT_180_DEG)) / stepsPerDeg;
-  return constrain(PAN_START_DEG + (signedOffsetDeg / ST3020_PAN_SIGN), ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
+  const float clamped = static_cast<float>(constrain(position, st3020PanPositionMin(), st3020PanPositionMax()));
+
+  float angleDeg = PAN_START_DEG;
+  if (clamped <= static_cast<float>(st3020Calibration.panPosAt180Deg)) {
+    const float segmentRatio =
+        (clamped - static_cast<float>(st3020Calibration.panPosAt90Deg)) /
+        static_cast<float>(st3020Calibration.panPosAt180Deg - st3020Calibration.panPosAt90Deg);
+    angleDeg = ST3020_PAN_MIN_DEG +
+               (segmentRatio * (PAN_START_DEG - ST3020_PAN_MIN_DEG));
+  } else {
+    const float segmentRatio =
+        (clamped - static_cast<float>(st3020Calibration.panPosAt180Deg)) /
+        static_cast<float>(st3020Calibration.panPosAt270Deg - st3020Calibration.panPosAt180Deg);
+    angleDeg = PAN_START_DEG +
+               (segmentRatio * (ST3020_PAN_MAX_DEG - PAN_START_DEG));
+  }
+  return constrain(angleDeg, ST3020_PAN_MIN_DEG, ST3020_PAN_MAX_DEG);
 }
 
 float st3020TiltAngleDegFromPosition(int position) {
-  const float clamped = static_cast<float>(constrain(position, ST3020_TILT_POS_MIN, ST3020_TILT_POS_MAX));
+  const float clamped = static_cast<float>(constrain(position, st3020TiltPositionMin(), st3020TiltPositionMax()));
 
   float externalDeg = 0.0f;
-  if (clamped <= static_cast<float>(ST3020_TILT_POS_AT_EXT_45_DEG)) {
+  if (clamped <= static_cast<float>(st3020Calibration.tiltPosAtExt45Deg)) {
     const float segmentRatio =
-        (clamped - static_cast<float>(ST3020_TILT_POS_AT_EXT_0_DEG)) /
-        static_cast<float>(ST3020_TILT_POS_AT_EXT_45_DEG - ST3020_TILT_POS_AT_EXT_0_DEG);
+        (clamped - static_cast<float>(st3020Calibration.tiltPosAtExt0Deg)) /
+        static_cast<float>(st3020Calibration.tiltPosAtExt45Deg - st3020Calibration.tiltPosAtExt0Deg);
     externalDeg = ST3020_TILT_CAL_EXT_0_DEG +
                   (segmentRatio * (ST3020_TILT_CAL_EXT_45_DEG - ST3020_TILT_CAL_EXT_0_DEG));
   } else {
     const float segmentRatio =
-        (clamped - static_cast<float>(ST3020_TILT_POS_AT_EXT_45_DEG)) /
-        static_cast<float>(ST3020_TILT_POS_AT_EXT_90_DEG - ST3020_TILT_POS_AT_EXT_45_DEG);
+        (clamped - static_cast<float>(st3020Calibration.tiltPosAtExt45Deg)) /
+        static_cast<float>(st3020Calibration.tiltPosAtExt90Deg - st3020Calibration.tiltPosAtExt45Deg);
     externalDeg = ST3020_TILT_CAL_EXT_45_DEG +
                   (segmentRatio * (ST3020_TILT_CAL_EXT_90_DEG - ST3020_TILT_CAL_EXT_45_DEG));
   }
@@ -1056,15 +1170,15 @@ void beginSt3020FeedbackTrimStep(uint32_t nowMs) {
     trimPanPosition = st3020OvershootPositionBeyondTarget(referencePanPosition,
                                                           st3020MotionFinalPanPosition,
                                                           ST3020_FEEDBACK_OVERSHOOT_POS,
-                                                          ST3020_PAN_POS_MIN,
-                                                          ST3020_PAN_POS_MAX);
+                                                          st3020PanPositionMin(),
+                                                          st3020PanPositionMax());
   }
   if (canOvershootTilt) {
     trimTiltPosition = st3020OvershootPositionBeyondTarget(referenceTiltPosition,
                                                            st3020MotionFinalTiltPosition,
                                                            ST3020_FEEDBACK_OVERSHOOT_POS,
-                                                           ST3020_TILT_POS_MIN,
-                                                           ST3020_TILT_POS_MAX);
+                                                           st3020TiltPositionMin(),
+                                                           st3020TiltPositionMax());
   }
   if (canOvershootPan || canOvershootTilt) {
     ++st3020MotionFeedbackOvershootCount;
@@ -1179,7 +1293,9 @@ void beginRemoteActuatorsSt3020() {
                 static_cast<unsigned>(ST3020_PAN_ID),
                 static_cast<unsigned>(ST3020_TILT_ID));
   Serial.printf("ST3020 pan map: 90deg=%d 180deg=%d 270deg=%d\n",
-                ST3020_PAN_POS_AT_90_DEG, ST3020_PAN_POS_AT_180_DEG, ST3020_PAN_POS_AT_270_DEG);
+                st3020Calibration.panPosAt90Deg,
+                st3020Calibration.panPosAt180Deg,
+                st3020Calibration.panPosAt270Deg);
 
   const int panPing = st3020Bus.Ping(ST3020_PAN_ID);
   const int tiltPing = st3020Bus.Ping(ST3020_TILT_ID);
@@ -1379,6 +1495,18 @@ void publishRemoteState(bool force = false) {
   doc["st3020_max_feedback_overshoots"] = ST3020_MAX_FEEDBACK_OVERSHOOTS;
   doc["st3020_feedback_overshoot_count"] = st3020MotionFeedbackOvershootCount;
   doc["st3020_settle_tolerance_pos"] = ST3020_SETTLE_TOLERANCE_POS;
+  doc["st3020_pan_pos_at_90_deg"] = st3020Calibration.panPosAt90Deg;
+  doc["st3020_pan_pos_at_180_deg"] = st3020Calibration.panPosAt180Deg;
+  doc["st3020_pan_pos_at_270_deg"] = st3020Calibration.panPosAt270Deg;
+  doc["st3020_tilt_pos_at_ext_0_deg"] = st3020Calibration.tiltPosAtExt0Deg;
+  doc["st3020_tilt_pos_at_ext_45_deg"] = st3020Calibration.tiltPosAtExt45Deg;
+  doc["st3020_tilt_pos_at_ext_90_deg"] = st3020Calibration.tiltPosAtExt90Deg;
+  doc["st3020_default_pan_pos_at_90_deg"] = ST3020_DEFAULT_CALIBRATION.panPosAt90Deg;
+  doc["st3020_default_pan_pos_at_180_deg"] = ST3020_DEFAULT_CALIBRATION.panPosAt180Deg;
+  doc["st3020_default_pan_pos_at_270_deg"] = ST3020_DEFAULT_CALIBRATION.panPosAt270Deg;
+  doc["st3020_default_tilt_pos_at_ext_0_deg"] = ST3020_DEFAULT_CALIBRATION.tiltPosAtExt0Deg;
+  doc["st3020_default_tilt_pos_at_ext_45_deg"] = ST3020_DEFAULT_CALIBRATION.tiltPosAtExt45Deg;
+  doc["st3020_default_tilt_pos_at_ext_90_deg"] = ST3020_DEFAULT_CALIBRATION.tiltPosAtExt90Deg;
   doc["pan_feedback_ok"] = st3020PanFeedbackValid;
   doc["tilt_feedback_ok"] = st3020TiltFeedbackValid;
   if (st3020PanVoltageTenths >= 0) {
@@ -1799,6 +1927,56 @@ void handleRemoteLocationCommand(const JsonDocument& doc) {
   publishRemoteDiag("location_updated");
 }
 
+void handleRemoteCalibrationCommand(const JsonDocument& doc) {
+  const char* action = doc["action"] | "apply";
+  if (strcmp(action, "reset_default") == 0) {
+    if (setActiveSt3020Calibration(ST3020_DEFAULT_CALIBRATION)) {
+      publishRemoteDiag("calibration_default_applied");
+    }
+    return;
+  }
+
+  St3020Calibration requested = st3020Calibration;
+  bool touched = false;
+
+  if (!doc["pan_pos_at_90_deg"].isNull()) {
+    requested.panPosAt90Deg = doc["pan_pos_at_90_deg"].as<int>();
+    touched = true;
+  }
+  if (!doc["pan_pos_at_180_deg"].isNull()) {
+    requested.panPosAt180Deg = doc["pan_pos_at_180_deg"].as<int>();
+    touched = true;
+  }
+  if (!doc["pan_pos_at_270_deg"].isNull()) {
+    requested.panPosAt270Deg = doc["pan_pos_at_270_deg"].as<int>();
+    touched = true;
+  }
+  if (!doc["tilt_pos_at_ext_0_deg"].isNull()) {
+    requested.tiltPosAtExt0Deg = doc["tilt_pos_at_ext_0_deg"].as<int>();
+    touched = true;
+  }
+  if (!doc["tilt_pos_at_ext_45_deg"].isNull()) {
+    requested.tiltPosAtExt45Deg = doc["tilt_pos_at_ext_45_deg"].as<int>();
+    touched = true;
+  }
+  if (!doc["tilt_pos_at_ext_90_deg"].isNull()) {
+    requested.tiltPosAtExt90Deg = doc["tilt_pos_at_ext_90_deg"].as<int>();
+    touched = true;
+  }
+
+  if (!touched) {
+    return;
+  }
+
+  if (!setActiveSt3020Calibration(requested)) {
+    Serial.println("ST3020 calibration rejected: invalid ordering or out-of-range values");
+    publishRemoteDiag("calibration_invalid");
+    return;
+  }
+
+  publishRemoteDiag("calibration_updated");
+}
+
 void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length) {
   String payload;
   payload.reserve(length);
@@ -1832,6 +2010,8 @@ void onRemoteMqttMessage(char* topic, uint8_t* payloadBytes, unsigned int length
     handleRemoteTimeCommand(doc);
   } else if (topicString == mqttTopic("cmd/location")) {
     handleRemoteLocationCommand(doc);
+  } else if (topicString == mqttTopic("cmd/calibration")) {
+    handleRemoteCalibrationCommand(doc);
   }
 
   markRemoteCommandReceived();
@@ -1925,6 +2105,7 @@ void ensureRemoteMqttConnected(uint32_t nowMs) {
   remoteMqttClient.subscribe(mqttTopic("cmd/action").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/time").c_str());
   remoteMqttClient.subscribe(mqttTopic("cmd/location").c_str());
+  remoteMqttClient.subscribe(mqttTopic("cmd/calibration").c_str());
   publishRemoteAvailability("online");
   publishRemoteState(true);
   publishRemoteDiag("mqtt_connected");

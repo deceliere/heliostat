@@ -50,11 +50,12 @@ let selectedStepDeg = 0.1;
 let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
-let latestPresets = { site_locations: [], beam_directions: [] };
+let latestPresets = { site_locations: [], beam_directions: [], calibration_presets: [] };
 let latestDriftSamples = [];
 let driftBaseline = null;
 let scanSpeedSlider = null;
 let scanDwellSlider = null;
+let calibrationInputsInitialized = false;
 
 function readScanServoSpeed(speedValue) {
   const rawSpeed = Number(speedValue);
@@ -258,6 +259,54 @@ function readSiteLocation() {
   };
 }
 
+function readCalibrationValues() {
+  return {
+    pan_pos_at_90_deg: Number(document.getElementById("cal-pan-90")?.value ?? 0),
+    pan_pos_at_180_deg: Number(document.getElementById("cal-pan-180")?.value ?? 0),
+    pan_pos_at_270_deg: Number(document.getElementById("cal-pan-270")?.value ?? 0),
+    tilt_pos_at_ext_0_deg: Number(document.getElementById("cal-tilt-0")?.value ?? 0),
+    tilt_pos_at_ext_45_deg: Number(document.getElementById("cal-tilt-45")?.value ?? 0),
+    tilt_pos_at_ext_90_deg: Number(document.getElementById("cal-tilt-90")?.value ?? 0),
+  };
+}
+
+function loadCalibrationInputs(values, presetName = null) {
+  if (!values) {
+    return;
+  }
+  const pan90 = document.getElementById("cal-pan-90");
+  const pan180 = document.getElementById("cal-pan-180");
+  const pan270 = document.getElementById("cal-pan-270");
+  const tilt0 = document.getElementById("cal-tilt-0");
+  const tilt45 = document.getElementById("cal-tilt-45");
+  const tilt90 = document.getElementById("cal-tilt-90");
+  const nameInput = document.getElementById("calibration-preset-name");
+  if (pan90) pan90.value = String(values.pan_pos_at_90_deg ?? "");
+  if (pan180) pan180.value = String(values.pan_pos_at_180_deg ?? "");
+  if (pan270) pan270.value = String(values.pan_pos_at_270_deg ?? "");
+  if (tilt0) tilt0.value = String(values.tilt_pos_at_ext_0_deg ?? "");
+  if (tilt45) tilt45.value = String(values.tilt_pos_at_ext_45_deg ?? "");
+  if (tilt90) tilt90.value = String(values.tilt_pos_at_ext_90_deg ?? "");
+  if (nameInput && presetName !== null) {
+    nameInput.value = presetName;
+  }
+}
+
+function loadCalibrationFromState(state, useDefaults = false) {
+  if (!state) {
+    return;
+  }
+  const prefix = useDefaults ? "st3020_default_" : "st3020_";
+  loadCalibrationInputs({
+    pan_pos_at_90_deg: state[`${prefix}pan_pos_at_90_deg`],
+    pan_pos_at_180_deg: state[`${prefix}pan_pos_at_180_deg`],
+    pan_pos_at_270_deg: state[`${prefix}pan_pos_at_270_deg`],
+    tilt_pos_at_ext_0_deg: state[`${prefix}tilt_pos_at_ext_0_deg`],
+    tilt_pos_at_ext_45_deg: state[`${prefix}tilt_pos_at_ext_45_deg`],
+    tilt_pos_at_ext_90_deg: state[`${prefix}tilt_pos_at_ext_90_deg`],
+  });
+}
+
 function renderPresetSelect(selectId, items) {
   const select = document.getElementById(selectId);
   if (!select) {
@@ -277,8 +326,21 @@ function renderPresetSelect(selectId, items) {
 }
 
 function renderPresets() {
+  const calibrationSelect = document.getElementById("calibration-preset-select");
+  const previousCalibrationValue = calibrationSelect?.value ?? "";
   renderPresetSelect("site-preset-select", latestPresets.site_locations ?? []);
   renderPresetSelect("beam-preset-select", latestPresets.beam_directions ?? []);
+  renderPresetSelect("calibration-preset-select", latestPresets.calibration_presets ?? []);
+  const updatedCalibrationSelect = document.getElementById("calibration-preset-select");
+  if (updatedCalibrationSelect && !updatedCalibrationSelect.querySelector('option[value="__firmware_default__"]')) {
+    const option = document.createElement("option");
+    option.value = "__firmware_default__";
+    option.textContent = "Firmware Default";
+    updatedCalibrationSelect.insertBefore(option, updatedCalibrationSelect.children[1] ?? null);
+  }
+  if (updatedCalibrationSelect && previousCalibrationValue === "__firmware_default__") {
+    updatedCalibrationSelect.value = "__firmware_default__";
+  }
 }
 
 function applySitePresetToInputs(preset) {
@@ -303,6 +365,13 @@ function applyBeamPresetToInputs(preset) {
   if (bearingInput) bearingInput.value = String(preset.bearing_deg);
   if (elevationInput) elevationInput.value = String(preset.elevation_deg);
   if (nameInput) nameInput.value = preset.name;
+}
+
+function applyCalibrationPresetToInputs(preset) {
+  if (!preset) {
+    return;
+  }
+  loadCalibrationInputs(preset, preset.name);
 }
 
 async function sendJog(axis, direction, multiplier = 1.0) {
@@ -436,6 +505,12 @@ function bindControlButtons() {
   const loadSitePresetButton = document.getElementById("load-site-preset");
   const saveSitePresetButton = document.getElementById("save-site-preset");
   const deleteSitePresetButton = document.getElementById("delete-site-preset");
+  const applyCalibrationButton = document.getElementById("apply-calibration");
+  const loadCurrentCalibrationButton = document.getElementById("load-current-calibration");
+  const loadDefaultCalibrationButton = document.getElementById("load-default-calibration");
+  const loadCalibrationPresetButton = document.getElementById("load-calibration-preset");
+  const saveCalibrationPresetButton = document.getElementById("save-calibration-preset");
+  const deleteCalibrationPresetButton = document.getElementById("delete-calibration-preset");
   const moveApproxTargetButton = document.getElementById("move-approx-target");
   const loadApproxTargetButton = document.getElementById("load-approx-target");
   const loadBeamPresetButton = document.getElementById("load-beam-preset");
@@ -552,6 +627,22 @@ function bindControlButtons() {
     }
   });
 
+  applyCalibrationButton?.addEventListener("click", async () => {
+    await postJson("/api/cmd/calibration", { action: "apply", ...readCalibrationValues() });
+    calibrationInputsInitialized = true;
+    await refreshUi();
+  });
+
+  loadCurrentCalibrationButton?.addEventListener("click", () => {
+    loadCalibrationFromState(latestState, false);
+    calibrationInputsInitialized = true;
+  });
+
+  loadDefaultCalibrationButton?.addEventListener("click", () => {
+    loadCalibrationFromState(latestState, true);
+    calibrationInputsInitialized = true;
+  });
+
   loadSitePresetButton?.addEventListener("click", () => {
     const selectedName = document.getElementById("site-preset-select")?.value ?? "";
     const preset = (latestPresets.site_locations ?? []).find((item) => item.name === selectedName);
@@ -575,6 +666,39 @@ function bindControlButtons() {
       return;
     }
     const result = await postJson("/api/presets/site/delete", { name: selectedName });
+    latestPresets = result.presets ?? latestPresets;
+    renderPresets();
+  });
+
+  loadCalibrationPresetButton?.addEventListener("click", () => {
+    const selectedName = document.getElementById("calibration-preset-select")?.value ?? "";
+    if (selectedName === "__firmware_default__") {
+      loadCalibrationFromState(latestState, true);
+      calibrationInputsInitialized = true;
+      return;
+    }
+    const preset = (latestPresets.calibration_presets ?? []).find((item) => item.name === selectedName);
+    applyCalibrationPresetToInputs(preset);
+    calibrationInputsInitialized = true;
+  });
+
+  saveCalibrationPresetButton?.addEventListener("click", async () => {
+    const name = document.getElementById("calibration-preset-name")?.value ?? "";
+    const result = await postJson("/api/presets/calibration", { name, ...readCalibrationValues() });
+    latestPresets = result.presets ?? latestPresets;
+    renderPresets();
+    const select = document.getElementById("calibration-preset-select");
+    if (select) {
+      select.value = name.trim();
+    }
+  });
+
+  deleteCalibrationPresetButton?.addEventListener("click", async () => {
+    const selectedName = document.getElementById("calibration-preset-select")?.value ?? "";
+    if (!selectedName || selectedName === "__firmware_default__") {
+      return;
+    }
+    const result = await postJson("/api/presets/calibration/delete", { name: selectedName });
     latestPresets = result.presets ?? latestPresets;
     renderPresets();
   });
@@ -761,6 +885,18 @@ async function refreshUi() {
     latestDriftSamples = drift.samples ?? [];
     renderPresets();
     renderDriftSamples();
+    if (
+      !calibrationInputsInitialized &&
+      typeof state.st3020_pan_pos_at_90_deg === "number" &&
+      typeof state.st3020_pan_pos_at_180_deg === "number" &&
+      typeof state.st3020_pan_pos_at_270_deg === "number" &&
+      typeof state.st3020_tilt_pos_at_ext_0_deg === "number" &&
+      typeof state.st3020_tilt_pos_at_ext_45_deg === "number" &&
+      typeof state.st3020_tilt_pos_at_ext_90_deg === "number"
+    ) {
+      loadCalibrationFromState(state, false);
+      calibrationInputsInitialized = true;
+    }
     const panInput = document.getElementById("pan-absolute");
     const tiltInput = document.getElementById("tilt-absolute");
     if (panInput) {

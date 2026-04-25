@@ -88,9 +88,29 @@ runtime_state = {
     "tilt_tracking_error_deg": None,
     "torque_enabled": None,
     "st3020_motion_stage": None,
+    "st3020_pan_pos_at_90_deg": None,
+    "st3020_pan_pos_at_180_deg": None,
+    "st3020_pan_pos_at_270_deg": None,
+    "st3020_tilt_pos_at_ext_0_deg": None,
+    "st3020_tilt_pos_at_ext_45_deg": None,
+    "st3020_tilt_pos_at_ext_90_deg": None,
+    "st3020_default_pan_pos_at_90_deg": None,
+    "st3020_default_pan_pos_at_180_deg": None,
+    "st3020_default_pan_pos_at_270_deg": None,
+    "st3020_default_tilt_pos_at_ext_0_deg": None,
+    "st3020_default_tilt_pos_at_ext_45_deg": None,
+    "st3020_default_tilt_pos_at_ext_90_deg": None,
 }
 
-PRESET_GROUPS = {"site_locations", "beam_directions"}
+PRESET_GROUPS = {"site_locations", "beam_directions", "calibration_presets"}
+CALIBRATION_FIELDS = [
+    "pan_pos_at_90_deg",
+    "pan_pos_at_180_deg",
+    "pan_pos_at_270_deg",
+    "tilt_pos_at_ext_0_deg",
+    "tilt_pos_at_ext_45_deg",
+    "tilt_pos_at_ext_90_deg",
+]
 
 
 def set_state(**kwargs) -> None:
@@ -111,6 +131,7 @@ def default_presets() -> dict:
     return {
         "site_locations": [],
         "beam_directions": [],
+        "calibration_presets": [],
     }
 
 
@@ -284,6 +305,18 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           tilt_tracking_error_deg=data.get("tilt_tracking_error_deg"),
           torque_enabled=data.get("torque_enabled"),
           st3020_motion_stage=data.get("st3020_motion_stage"),
+          st3020_pan_pos_at_90_deg=data.get("st3020_pan_pos_at_90_deg"),
+          st3020_pan_pos_at_180_deg=data.get("st3020_pan_pos_at_180_deg"),
+          st3020_pan_pos_at_270_deg=data.get("st3020_pan_pos_at_270_deg"),
+          st3020_tilt_pos_at_ext_0_deg=data.get("st3020_tilt_pos_at_ext_0_deg"),
+          st3020_tilt_pos_at_ext_45_deg=data.get("st3020_tilt_pos_at_ext_45_deg"),
+          st3020_tilt_pos_at_ext_90_deg=data.get("st3020_tilt_pos_at_ext_90_deg"),
+          st3020_default_pan_pos_at_90_deg=data.get("st3020_default_pan_pos_at_90_deg"),
+          st3020_default_pan_pos_at_180_deg=data.get("st3020_default_pan_pos_at_180_deg"),
+          st3020_default_pan_pos_at_270_deg=data.get("st3020_default_pan_pos_at_270_deg"),
+          st3020_default_tilt_pos_at_ext_0_deg=data.get("st3020_default_tilt_pos_at_ext_0_deg"),
+          st3020_default_tilt_pos_at_ext_45_deg=data.get("st3020_default_tilt_pos_at_ext_45_deg"),
+          st3020_default_tilt_pos_at_ext_90_deg=data.get("st3020_default_tilt_pos_at_ext_90_deg"),
           last_state_update_unix_ms=int(round(time.time() * 1000)),
           remote_online=bool(data.get("mqtt_ok", get_state().get("remote_online", False))),
       )
@@ -399,6 +432,21 @@ def api_preset_beam_delete(payload: dict) -> dict:
     return {"ok": True, "presets": presets}
 
 
+@app.post("/api/presets/calibration")
+def api_preset_calibration(payload: dict) -> dict:
+    preset = {"name": normalize_name(payload.get("name", ""))}
+    for field in CALIBRATION_FIELDS:
+        preset[field] = int(payload.get(field))
+    presets = upsert_preset("calibration_presets", preset)
+    return {"ok": True, "presets": presets, "preset": preset}
+
+
+@app.post("/api/presets/calibration/delete")
+def api_preset_calibration_delete(payload: dict) -> dict:
+    presets = delete_preset("calibration_presets", normalize_name(payload.get("name", "")))
+    return {"ok": True, "presets": presets}
+
+
 @app.post("/api/cmd/mode")
 def api_cmd_mode(payload: dict) -> dict:
     mode = payload.get("mode")
@@ -463,6 +511,26 @@ def api_cmd_location(payload: dict) -> dict:
         "longitude_deg": float(payload.get("longitude_deg")),
     }
     mqtt_client.publish(topic("cmd/location"), json.dumps(command), qos=1)
+    return {"ok": True, "published": True, "command": command}
+
+
+@app.post("/api/cmd/calibration")
+def api_cmd_calibration(payload: dict) -> dict:
+    action = payload.get("action", "apply")
+    if action not in {"apply", "reset_default"}:
+        raise HTTPException(status_code=400, detail="invalid calibration action")
+
+    command = {"action": action}
+    if action == "apply":
+        touched = False
+        for field in CALIBRATION_FIELDS:
+            if field in payload:
+                command[field] = int(payload.get(field))
+                touched = True
+        if not touched:
+            raise HTTPException(status_code=400, detail="no calibration values provided")
+
+    mqtt_client.publish(topic("cmd/calibration"), json.dumps(command), qos=1)
     return {"ok": True, "published": True, "command": command}
 
 

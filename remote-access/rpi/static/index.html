@@ -155,6 +155,59 @@
       </section>
 
       <section class="control-card">
+        <h2>Servo Calibration</h2>
+        <div class="manual-grid">
+          <label>
+            <span class="label">Pan 90° Pos</span>
+            <input id="cal-pan-90" type="number" min="0" max="4095" step="1" />
+          </label>
+          <label>
+            <span class="label">Pan 180° Pos</span>
+            <input id="cal-pan-180" type="number" min="0" max="4095" step="1" />
+          </label>
+          <label>
+            <span class="label">Pan 270° Pos</span>
+            <input id="cal-pan-270" type="number" min="0" max="4095" step="1" />
+          </label>
+          <label>
+            <span class="label">Tilt 0° Pos</span>
+            <input id="cal-tilt-0" type="number" min="0" max="4095" step="1" />
+          </label>
+          <label>
+            <span class="label">Tilt 45° Pos</span>
+            <input id="cal-tilt-45" type="number" min="0" max="4095" step="1" />
+          </label>
+          <label>
+            <span class="label">Tilt 90° Pos</span>
+            <input id="cal-tilt-90" type="number" min="0" max="4095" step="1" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="apply-calibration">Apply Calibration</button>
+          <button type="button" id="load-current-calibration">Load Current Calibration</button>
+          <button type="button" id="load-default-calibration">Load Firmware Default</button>
+        </div>
+        <div class="preset-grid">
+          <label>
+            <span class="label">Calibration Preset</span>
+            <select id="calibration-preset-select">
+              <option value="">No preset</option>
+            </select>
+          </label>
+          <label>
+            <span class="label">Preset Name</span>
+            <input id="calibration-preset-name" type="text" placeholder="Roof mount v2" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" id="load-calibration-preset">Load Calibration Preset</button>
+          <button type="button" id="save-calibration-preset">Save Calibration Preset</button>
+          <button type="button" id="delete-calibration-preset">Delete Calibration Preset</button>
+        </div>
+        <p class="note">The firmware always keeps a built-in default calibration. Presets saved here are stored on the Pi and can be reapplied on site without reflashing.</p>
+      </section>
+
+      <section class="control-card">
         <h2>Approximate Beam Direction</h2>
         <div class="manual-grid">
           <label>
