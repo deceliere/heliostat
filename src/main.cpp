@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
-#include <BLEController.h>
-#include <BLEControllerRegistry.h>
 #include <ESP32Servo.h>
 #include <SCServo.h>
 #ifndef MQTT_MAX_PACKET_SIZE
@@ -10,8 +8,6 @@
 #endif
 #include <PubSubClient.h>
 #include <WiFi.h>
-#include <esp_now.h>
-#include <esp_wifi.h>
 #include <time.h>
 
 #if __has_include("remote_secrets.h")
@@ -22,14 +18,6 @@
 
 
 namespace {
-
-#if defined(DEVICE_ROLE_CONTROLLER) && defined(DEVICE_ROLE_REMOTE)
-#error "Choose only one role: DEVICE_ROLE_CONTROLLER or DEVICE_ROLE_REMOTE"
-#endif
-
-#if !defined(DEVICE_ROLE_CONTROLLER) && !defined(DEVICE_ROLE_REMOTE)
-#error "Define DEVICE_ROLE_CONTROLLER or DEVICE_ROLE_REMOTE in platformio.ini"
-#endif
 
 constexpr bool STATUS_LED_ENABLED = true;
 constexpr int STATUS_LED_PIN = 23;
@@ -50,21 +38,15 @@ constexpr float TILT_SERVO_MIN_DEG = 00.0f;
 constexpr float TILT_SERVO_MAX_DEG = 180.0f;
 constexpr float TILT_SERVO_AT_MODEL_HORIZON_DEG = TILT_START_DEG + TILT_SERVO_OFFSET_DEG;
 
-constexpr float STICK_DEADZONE = 0.12f;
 constexpr float MAX_TARGET_SPEED_DEG_PER_SEC = 90.0f;
 constexpr float MANUAL_PRECISION_SPEED_DEG_PER_SEC = 8.0f;
 constexpr float SERVO_MAX_SLEW_DEG_PER_SEC = 500.0f;
-constexpr uint32_t CONTROL_UPDATE_MS = 5;
 constexpr uint32_t STATUS_PRINT_MS = 2000;
 constexpr uint32_t CONTROL_LINK_TIMEOUT_MS = 250;
 constexpr bool ENABLE_RUNTIME_STATUS_LOGS = false;
 constexpr bool WAIT_FOR_SERIAL = false;
 constexpr uint32_t WAIT_FOR_SERIAL_TIMEOUT_MS = 15000;
-constexpr bool CLEAR_XBOX_BONDS_ON_BOOT = true;
-constexpr uint8_t ESPNOW_CHANNEL = 1;
-constexpr uint32_t REMOTE_ANNOUNCE_MS = 1000;
 constexpr uint32_t BLINK_PERIOD_MS = 300;
-constexpr uint8_t ESPNOW_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 constexpr int PAN_SERVO_PIN = 5;
 constexpr int TILT_SERVO_PIN = 6;
 constexpr int PAN_SERVO_MIN_PULSE_US = 566;
@@ -175,23 +157,7 @@ constexpr char REMOTE_MQTT_BASE_TOPIC_VALUE[] = REMOTE_MQTT_BASE_TOPIC;
 constexpr char REMOTE_NTP_SERVER_1[] = "pool.ntp.org";
 constexpr char REMOTE_NTP_SERVER_2[] = "time.nist.gov";
 constexpr char REMOTE_NTP_SERVER_3[] = "time.google.com";
-
-#if defined(DEVICE_ROLE_CONTROLLER)
-constexpr const char* ROLE_NAME = "controller";
-#else
 constexpr const char* ROLE_NAME = "remote";
-#endif
-
-enum PacketType : uint8_t {
-  PACKET_TYPE_CONTROL = 1,
-  PACKET_TYPE_ANNOUNCE = 2,
-};
-
-constexpr uint8_t PACKET_FLAG_RECENTER = 0x01;
-constexpr uint8_t PACKET_FLAG_CAPTURE_TARGET = 0x02;
-constexpr uint8_t PACKET_FLAG_AUTO_TRACK = 0x04;
-constexpr uint8_t PACKET_FLAG_TIME_UPDATE = 0x08;
-constexpr uint8_t PACKET_FLAG_PRECISION = 0x20;
 
 enum ControlMode : uint8_t {
   CONTROL_MODE_MANUAL = 0,
@@ -245,32 +211,7 @@ struct Vec3 {
   float y;
   float z;
 };
-
-struct EspNowPacket {
-  uint32_t magic;
-  uint8_t type;
-  uint8_t reserved[3];
-  uint32_t seq;
-  float panInput;
-  float tiltInput;
-  float panAngleDeg;
-  float tiltAngleDeg;
-  float panTargetDeg;
-  float tiltTargetDeg;
-  float capturedPanAngleDeg;
-  float capturedTiltAngleDeg;
-  float autoReferencePanDeg;
-  float autoReferenceTiltDeg;
-  int64_t unixTimeUtc;
-  int64_t autoTrackStartUnixTimeUtc;
-  int32_t panPulseUs;
-  int32_t tiltPulseUs;
-};
-
-constexpr uint32_t LED_PACKET_MAGIC = 0x48454C31;  // "HEL1"
-BLEController controller;
 Adafruit_NeoPixel statusLed(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_RGB + NEO_KHZ800);
-#if defined(DEVICE_ROLE_REMOTE)
 Servo panServo;
 Servo tiltServo;
 SMS_STS st3020Bus;
@@ -297,9 +238,6 @@ uint8_t st3020MotionCorrectionAttempts = 0;
 uint8_t st3020MotionFeedbackOvershootCount = 0;
 WiFiClient remoteMqttNetClient;
 PubSubClient remoteMqttClient(remoteMqttNetClient);
-bool espNowAutoTrackFlagSeen = false;
-bool lastEspNowAutoTrackFlag = false;
-#endif
 
 float panAngleDeg = PAN_START_DEG;
 float tiltAngleDeg = TILT_START_DEG;
@@ -314,25 +252,14 @@ uint8_t currentRed = 0;
 uint8_t currentGreen = 0;
 uint8_t currentBlue = 0;
 
-uint32_t lastControlUpdateMs = 0;
 uint32_t lastStatusPrintMs = 0;
-uint32_t bootMs = 0;
-uint32_t packetSequence = 0;
 uint32_t lastRxMs = 0;
-uint32_t lastAnnounceMs = 0;
-
-bool xboxConnected = false;
-bool espNowPeerReady = false;
-bool lastSendOk = false;
 bool packetReceived = false;
-bool broadcastPeerReady = false;
 bool blinkActive = false;
 bool recenterRequested = false;
 bool captureTargetRequested = false;
 bool autoTrackEnabled = false;
 bool precisionManualMode = false;
-bool sendPending = false;
-bool timeUpdatePending = false;
 ControlMode controlMode = CONTROL_MODE_MANUAL;
 bool targetDirectionValid = false;
 bool sunTimeValid = false;
@@ -382,45 +309,6 @@ float approxTargetPanDeg = PAN_START_DEG;
 float approxTargetTiltDeg = TILT_START_DEG;
 char serialCommandBuffer[SERIAL_COMMAND_BUFFER_SIZE] = {};
 size_t serialCommandLength = 0;
-
-#if defined(DEVICE_ROLE_CONTROLLER)
-uint8_t remotePeerMac[6] = {0, 0, 0, 0, 0, 0};
-uint8_t pendingAutoPairMac[6] = {0, 0, 0, 0, 0, 0};
-bool lastCaptureButton = false;
-bool lastAutoButton = false;
-bool lastDiagButton = false;
-float remoteReportedPanAngleDeg = PAN_START_DEG;
-float remoteReportedTiltAngleDeg = TILT_START_DEG;
-float remoteReportedPanTargetDeg = PAN_START_DEG;
-float remoteReportedTiltTargetDeg = TILT_START_DEG;
-ControlMode remoteReportedControlMode = CONTROL_MODE_MANUAL;
-bool remoteReportedTargetDirectionValid = false;
-bool remoteReportedSunTimeValid = false;
-float remoteReportedCapturedPanAngleDeg = PAN_START_DEG;
-float remoteReportedCapturedTiltAngleDeg = TILT_START_DEG;
-int remoteReportedPanPulseUs = PAN_SERVO_MIN_PULSE_US;
-int remoteReportedTiltPulseUs = TILT_SERVO_MIN_PULSE_US;
-time_t remoteReportedUnixTimeUtc = 0;
-float remoteReportedAutoReferencePanDeg = PAN_START_DEG;
-float remoteReportedAutoReferenceTiltDeg = TILT_START_DEG;
-time_t remoteReportedAutoTrackStartUnixTimeUtc = 0;
-bool pendingAutoPair = false;
-bool pendingControllerConnectLog = false;
-bool pendingControllerDisconnectLog = false;
-bool pendingControllerSyncPacket = false;
-bool pendingEspNowTxFailureLog = false;
-#endif
-
-float applyDeadzone(float value) {
-  const float normalized = constrain(value, -1.0f, 1.0f);
-  const float magnitude = fabsf(normalized);
-  if (magnitude < STICK_DEADZONE) {
-    return 0.0f;
-  }
-
-  const float scaled = (magnitude - STICK_DEADZONE) / (1.0f - STICK_DEADZONE);
-  return copysignf(scaled, normalized);
-}
 
 float applySpeedCurve(float speed) {
   const float clamped = constrain(speed, -1.0f, 1.0f);
@@ -650,13 +538,6 @@ void waitForSerialIfEnabled() {
   }
 }
 
-String formatMac(const uint8_t* mac) {
-  char buffer[18];
-  snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  return String(buffer);
-}
-
 String mqttTopic(const char* suffix) {
   String topic = REMOTE_MQTT_BASE_TOPIC_VALUE;
   topic += "/";
@@ -752,61 +633,10 @@ void applyLedFromPanTilt(uint32_t nowMs) {
   updateDisplayedColor(nowMs);
 }
 
-void setupEspNowWifi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
-}
-
-void ensureEspNow() {
-  if (esp_now_init() == ESP_OK) {
-    return;
-  }
-
-  Serial.println("ESP-NOW init failed, restarting.");
-  delay(500);
-  ESP.restart();
-}
-
-bool addPeer(const uint8_t* mac) {
-  esp_now_peer_info_t peerInfo{};
-  memcpy(peerInfo.peer_addr, mac, 6);
-  peerInfo.channel = ESPNOW_CHANNEL;
-  peerInfo.encrypt = false;
-
-  if (esp_now_is_peer_exist(mac)) {
-    return true;
-  }
-
-  const esp_err_t result = esp_now_add_peer(&peerInfo);
-  if (result == ESP_OK || result == ESP_ERR_ESPNOW_EXIST) {
-    return true;
-  }
-
-  Serial.printf("ESP-NOW add peer failed for %s: %d\n",
-                formatMac(mac).c_str(), static_cast<int>(result));
-  return false;
-}
-
-void ensureBroadcastPeer() {
-  broadcastPeerReady = addPeer(ESPNOW_BROADCAST_MAC);
-}
-
 void setHeliostatUnixTimeUtc(time_t unixTimeUtc) {
   heliostatStartUnixTimeUtc = unixTimeUtc;
   heliostatTimeBaseMillis = millis();
 }
-
-#if defined(DEVICE_ROLE_CONTROLLER)
-void setControllerHeliostatUnixTimeUtc(time_t unixTimeUtc) {
-  setHeliostatUnixTimeUtc(unixTimeUtc);
-  timeUpdatePending = true;
-}
-#endif
-
-#if defined(DEVICE_ROLE_REMOTE)
 int lastPanPulseUs = 0;
 int lastTiltPulseUs = 0;
 
@@ -2292,132 +2122,6 @@ void beginRemoteMqtt() {
   remoteMqttClient.setCallback(onRemoteMqttMessage);
   remoteMqttClient.setBufferSize(REMOTE_MQTT_BUFFER_SIZE);
 }
-#endif
-
-#if defined(DEVICE_ROLE_CONTROLLER)
-bool isKnownRemotePeer() {
-  static const uint8_t emptyMac[6] = {0, 0, 0, 0, 0, 0};
-  return memcmp(remotePeerMac, emptyMac, sizeof(remotePeerMac)) != 0;
-}
-
-void rememberRemotePeer(const uint8_t* mac) {
-  memcpy(remotePeerMac, mac, sizeof(remotePeerMac));
-  espNowPeerReady = addPeer(remotePeerMac);
-  if (espNowPeerReady) {
-    Serial.printf("Remote auto-paired: %s\n", formatMac(remotePeerMac).c_str());
-  }
-}
-
-void onEspNowSent(const uint8_t* macAddr, esp_now_send_status_t status) {
-  sendPending = false;
-  lastSendOk = (status == ESP_NOW_SEND_SUCCESS);
-  if (!isKnownRemotePeer() || memcmp(macAddr, remotePeerMac, sizeof(remotePeerMac)) != 0) {
-    return;
-  }
-  if (!lastSendOk) {
-    pendingEspNowTxFailureLog = true;
-  }
-}
-
-void sendLedPacket() {
-  if (!espNowPeerReady || sendPending) {
-    return;
-  }
-
-  EspNowPacket packet{};
-  packet.magic = LED_PACKET_MAGIC;
-  packet.type = PACKET_TYPE_CONTROL;
-  packet.reserved[0] =
-      (recenterRequested ? PACKET_FLAG_RECENTER : 0) |
-      (captureTargetRequested ? PACKET_FLAG_CAPTURE_TARGET : 0) |
-      (autoTrackEnabled ? PACKET_FLAG_AUTO_TRACK : 0) |
-      (timeUpdatePending ? PACKET_FLAG_TIME_UPDATE : 0) |
-      (precisionManualMode ? PACKET_FLAG_PRECISION : 0);
-  packet.seq = packetSequence++;
-  packet.panInput = remotePanInput;
-  packet.tiltInput = remoteTiltInput;
-  packet.panAngleDeg = remoteReportedPanAngleDeg;
-  packet.tiltAngleDeg = remoteReportedTiltAngleDeg;
-  packet.panTargetDeg = remoteReportedPanTargetDeg;
-  packet.tiltTargetDeg = remoteReportedTiltTargetDeg;
-  packet.capturedPanAngleDeg = remoteReportedCapturedPanAngleDeg;
-  packet.capturedTiltAngleDeg = remoteReportedCapturedTiltAngleDeg;
-  packet.unixTimeUtc =
-      timeUpdatePending ? static_cast<int64_t>(heliostatStartUnixTimeUtc) : static_cast<int64_t>(0);
-
-  sendPending = true;
-  const esp_err_t result =
-      esp_now_send(remotePeerMac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
-  if (result != ESP_OK) {
-    sendPending = false;
-    lastSendOk = false;
-    Serial.printf("ESP-NOW send failed immediately: %d\n", static_cast<int>(result));
-  } else {
-    timeUpdatePending = false;
-  }
-}
-
-void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
-  if (len != static_cast<int>(sizeof(EspNowPacket))) {
-    Serial.printf("ESP-NOW RX wrong size from %s: %d\n", formatMac(macAddr).c_str(), len);
-    return;
-  }
-
-  EspNowPacket packet{};
-  memcpy(&packet, data, sizeof(packet));
-  if (packet.magic != LED_PACKET_MAGIC) {
-    Serial.printf("ESP-NOW RX wrong magic from %s\n", formatMac(macAddr).c_str());
-    return;
-  }
-
-  if (packet.type == PACKET_TYPE_ANNOUNCE) {
-    remoteReportedControlMode = static_cast<ControlMode>(packet.reserved[0]);
-    remoteReportedTargetDirectionValid = packet.reserved[1] != 0;
-    remoteReportedSunTimeValid = packet.reserved[2] != 0;
-    remoteReportedPanAngleDeg = packet.panAngleDeg;
-    remoteReportedTiltAngleDeg = packet.tiltAngleDeg;
-    remoteReportedPanTargetDeg = packet.panTargetDeg;
-    remoteReportedTiltTargetDeg = packet.tiltTargetDeg;
-    remoteReportedCapturedPanAngleDeg = packet.capturedPanAngleDeg;
-    remoteReportedCapturedTiltAngleDeg = packet.capturedTiltAngleDeg;
-    remoteReportedAutoReferencePanDeg = packet.autoReferencePanDeg;
-    remoteReportedAutoReferenceTiltDeg = packet.autoReferenceTiltDeg;
-    remoteReportedPanPulseUs = packet.panPulseUs;
-    remoteReportedTiltPulseUs = packet.tiltPulseUs;
-    remoteReportedUnixTimeUtc = static_cast<time_t>(packet.unixTimeUtc);
-    remoteReportedAutoTrackStartUnixTimeUtc = static_cast<time_t>(packet.autoTrackStartUnixTimeUtc);
-    if (!controller.isConnected()) {
-      autoTrackEnabled = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
-    }
-    blinkActive = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
-    if (!espNowPeerReady) {
-      memcpy(pendingAutoPairMac, macAddr, sizeof(pendingAutoPairMac));
-      pendingAutoPair = true;
-      pendingControllerSyncPacket = true;
-    }
-    if ((packet.reserved[0] & PACKET_FLAG_TIME_UPDATE) != 0 && packet.unixTimeUtc > 0) {
-      setHeliostatUnixTimeUtc(static_cast<time_t>(packet.unixTimeUtc));
-    }
-    return;
-  }
-
-  if (packet.type != PACKET_TYPE_CONTROL) {
-    return;
-  }
-
-  if (!espNowPeerReady) {
-    return;
-  }
-
-  if (memcmp(macAddr, remotePeerMac, sizeof(remotePeerMac)) != 0) {
-    return;
-  }
-
-  packetReceived = true;
-  lastRxMs = millis();
-}
-
-#endif
 
 void handleSerialCommandLine(const char* line) {
   while (*line == ' ' || *line == '\t') {
@@ -2427,7 +2131,6 @@ void handleSerialCommandLine(const char* line) {
   normalized.trim();
   line = normalized.c_str();
 
-#if defined(DEVICE_ROLE_REMOTE)
   if (strcmp(line, "POS?") == 0 || strcmp(line, "pos?") == 0 ||
       strcmp(line, "POS") == 0 || strcmp(line, "pos") == 0 ||
       strcmp(line, "STATE?") == 0 || strcmp(line, "state?") == 0) {
@@ -2611,45 +2314,6 @@ void handleSerialCommandLine(const char* line) {
     Serial.println("  JT=<delta_deg>        jog tilt target by delta (internal sign)");
     return;
   }
-#endif
-
-#if defined(DEVICE_ROLE_CONTROLLER)
-  if (strncmp(line, "T=", 2) == 0 || strncmp(line, "t=", 2) == 0) {
-    const long long parsed = atoll(line + 2);
-    if (parsed > 0) {
-      setControllerHeliostatUnixTimeUtc(static_cast<time_t>(parsed));
-      Serial.printf("UTC time set: %lld\n", parsed);
-      sendLedPacket();
-      return;
-    }
-  }
-
-  if (strcmp(line, "TIME?") == 0 || strcmp(line, "time?") == 0) {
-    time_t unixTimeUtc = 0;
-    if (currentUnixTimeUtc(unixTimeUtc)) {
-      Serial.printf("UTC time current: %lld\n", static_cast<long long>(unixTimeUtc));
-    } else {
-      Serial.println("UTC time not set.");
-    }
-    return;
-  }
-
-  if (strcmp(line, "HELP") == 0 || strcmp(line, "help") == 0) {
-    Serial.println("Serial commands:");
-#if defined(DEVICE_ROLE_REMOTE)
-    Serial.println("  POS?                  show target/feedback degrees and positions");
-    Serial.println("  CAL?                  show model/servo sign configuration");
-    Serial.println("  PAN=<deg>             set pan target directly");
-    Serial.println("  TILT=<deg>            set public tilt target directly");
-    Serial.println("  JP=<delta_deg>        jog pan target by delta");
-    Serial.println("  JT=<delta_deg>        jog tilt target by delta (internal sign)");
-#else
-    Serial.println("  T=<unix_utc_seconds>  set UTC time");
-    Serial.println("  TIME?                 show current UTC time");
-#endif
-    return;
-  }
-#endif
 
   if (line[0] != '\0') {
     Serial.printf("Unknown serial command: %s\n", line);
@@ -2677,187 +2341,6 @@ void handleSerialInput() {
   }
 }
 
-#if defined(DEVICE_ROLE_CONTROLLER)
-void printTrackingDiagnostic() {
-  const double driftSeconds =
-      (remoteReportedUnixTimeUtc > 0 && remoteReportedAutoTrackStartUnixTimeUtc > 0)
-          ? difftime(remoteReportedUnixTimeUtc, remoteReportedAutoTrackStartUnixTimeUtc)
-          : -1.0;
-  const String nowText = formatUnixTimeUtc(remoteReportedUnixTimeUtc);
-  const String autoStartText = formatUnixTimeUtc(remoteReportedAutoTrackStartUnixTimeUtc);
-  Serial.printf(
-      "TRACK_DIAG | mode=%s | now_utc=%s | auto_start_utc=%s | drift_s=%.0f | auto_ref_pan=%.3f | actual_pan=%.3f | delta_pan=%+.3f | auto_ref_tilt=%.3f | actual_tilt=%.3f | delta_tilt=%+.3f | target=%s | sun_time=%s\n",
-      controlModeName(remoteReportedControlMode),
-      nowText.c_str(),
-      autoStartText.c_str(),
-      driftSeconds,
-      remoteReportedAutoReferencePanDeg,
-      remoteReportedPanAngleDeg,
-      remoteReportedPanAngleDeg - remoteReportedAutoReferencePanDeg,
-      remoteReportedAutoReferenceTiltDeg,
-      remoteReportedTiltAngleDeg,
-      remoteReportedTiltAngleDeg - remoteReportedAutoReferenceTiltDeg,
-      remoteReportedTargetDirectionValid ? "ok" : "missing",
-      remoteReportedSunTimeValid ? "ok" : "missing");
-}
-
-void serviceControllerDeferredActions(uint32_t nowMs) {
-  if (pendingAutoPair) {
-    pendingAutoPair = false;
-    rememberRemotePeer(pendingAutoPairMac);
-  }
-
-  if (pendingControllerSyncPacket) {
-    pendingControllerSyncPacket = false;
-    sendLedPacket();
-  }
-
-  if (pendingEspNowTxFailureLog) {
-    pendingEspNowTxFailureLog = false;
-    if (isKnownRemotePeer()) {
-      Serial.printf("ESP-NOW TX failed to %s\n", formatMac(remotePeerMac).c_str());
-    } else {
-      Serial.println("ESP-NOW TX failed.");
-    }
-  }
-
-  if (pendingControllerConnectLog) {
-    pendingControllerConnectLog = false;
-    Serial.println("Xbox connected.");
-  }
-
-  if (pendingControllerDisconnectLog) {
-    pendingControllerDisconnectLog = false;
-    Serial.println("Xbox disconnected.");
-  }
-
-  applyLedFromPanTilt(nowMs);
-}
-#else
-void sendAnnouncePacket(uint32_t nowMs) {
-  if (!broadcastPeerReady || (nowMs - lastAnnounceMs) < REMOTE_ANNOUNCE_MS) {
-    return;
-  }
-
-  lastAnnounceMs = nowMs;
-  time_t currentUnixTime = 0;
-  const bool haveCurrentUnixTime = currentUnixTimeUtc(currentUnixTime);
-
-  EspNowPacket packet{};
-  packet.magic = LED_PACKET_MAGIC;
-  packet.type = PACKET_TYPE_ANNOUNCE;
-  packet.reserved[0] = static_cast<uint8_t>(controlMode);
-  packet.reserved[1] = targetDirectionValid ? 1 : 0;
-  packet.reserved[2] = sunTimeValid ? 1 : 0;
-  packet.seq = packetSequence++;
-  packet.panAngleDeg = panAngleDeg;
-  packet.tiltAngleDeg = tiltAngleDeg;
-  packet.panTargetDeg = panTargetDeg;
-  packet.tiltTargetDeg = tiltTargetDeg;
-  packet.capturedPanAngleDeg = capturedPanAngleDeg;
-  packet.capturedTiltAngleDeg = capturedTiltAngleDeg;
-  packet.autoReferencePanDeg = lastAutoReferencePanDeg;
-  packet.autoReferenceTiltDeg = lastAutoReferenceTiltDeg;
-  packet.unixTimeUtc = haveCurrentUnixTime ? static_cast<int64_t>(currentUnixTime) : static_cast<int64_t>(0);
-  packet.autoTrackStartUnixTimeUtc = static_cast<int64_t>(autoTrackStartUnixTimeUtc);
-  packet.panPulseUs = lastPanPulseUs;
-  packet.tiltPulseUs = lastTiltPulseUs;
-
-  const esp_err_t result =
-      esp_now_send(ESPNOW_BROADCAST_MAC, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
-  if (result != ESP_OK) {
-    Serial.printf("ESP-NOW announce failed immediately: %d\n", static_cast<int>(result));
-  }
-}
-
-void onEspNowReceived(const uint8_t* macAddr, const uint8_t* data, int len) {
-  if (len != static_cast<int>(sizeof(EspNowPacket))) {
-    Serial.printf("ESP-NOW RX wrong size from %s: %d\n", formatMac(macAddr).c_str(), len);
-    return;
-  }
-
-  EspNowPacket packet{};
-  memcpy(&packet, data, sizeof(packet));
-  if (packet.magic != LED_PACKET_MAGIC || packet.type != PACKET_TYPE_CONTROL) {
-    return;
-  }
-
-  const bool packetRecenterRequested = (packet.reserved[0] & PACKET_FLAG_RECENTER) != 0;
-  const bool packetCaptureTargetRequested = (packet.reserved[0] & PACKET_FLAG_CAPTURE_TARGET) != 0;
-  const bool packetAutoTrackEnabled = (packet.reserved[0] & PACKET_FLAG_AUTO_TRACK) != 0;
-
-  // Latch one-shot controller actions so they are not lost if the next packet clears the bit
-  // before the main loop has processed them.
-  recenterRequested = recenterRequested || packetRecenterRequested;
-  captureTargetRequested = captureTargetRequested || packetCaptureTargetRequested;
-
-  // Treat ESP-NOW auto-track as an edge-driven intent. This avoids idle packets from forcing
-  // MQTT/UI-triggered auto mode back to manual, while still allowing controller toggles to apply.
-  if (!espNowAutoTrackFlagSeen || packetAutoTrackEnabled != lastEspNowAutoTrackFlag) {
-    autoTrackEnabled = packetAutoTrackEnabled;
-    lastEspNowAutoTrackFlag = packetAutoTrackEnabled;
-    espNowAutoTrackFlagSeen = true;
-  }
-
-  precisionManualMode = (packet.reserved[0] & PACKET_FLAG_PRECISION) != 0;
-  remotePanInput = constrain(packet.panInput, -1.0f, 1.0f);
-  remoteTiltInput = constrain(packet.tiltInput, -1.0f, 1.0f);
-  if ((packet.reserved[0] & PACKET_FLAG_TIME_UPDATE) != 0 && packet.unixTimeUtc > 0) {
-    setHeliostatUnixTimeUtc(static_cast<time_t>(packet.unixTimeUtc));
-  }
-  packetReceived = true;
-  lastRxMs = millis();
-}
-#endif
-
-void updateLedFromXbox(uint32_t nowMs) {
-#if defined(DEVICE_ROLE_CONTROLLER)
-  if ((nowMs - lastControlUpdateMs) < CONTROL_UPDATE_MS) {
-    return;
-  }
-
-  lastControlUpdateMs = nowMs;
-
-  if (!controller.isConnected()) {
-    return;
-  }
-
-  BLEControlsEvent state;
-  controller.readControls(state);
-
-  const bool capturePressed = state.buttonX && !lastCaptureButton;
-  const bool autoPressed = state.buttonY && !lastAutoButton;
-  const bool diagPressed = state.buttonB && !lastDiagButton;
-  lastCaptureButton = state.buttonX;
-  lastAutoButton = state.buttonY;
-  lastDiagButton = state.buttonB;
-
-  remotePanInput = applyDeadzone(-state.leftStickX);
-  remoteTiltInput = applyDeadzone(-state.leftStickY);
-  recenterRequested = state.buttonA;
-  captureTargetRequested = capturePressed;
-  precisionManualMode = state.leftBumper;
-  if (autoPressed) {
-    autoTrackEnabled = !autoTrackEnabled;
-  }
-  if (diagPressed) {
-    printTrackingDiagnostic();
-  }
-  blinkActive = autoTrackEnabled || (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
-
-  panAngleDeg = constrain(
-      PAN_START_DEG + (remotePanInput * ((panMaxLimitDeg() - panMinLimitDeg()) * 0.5f)),
-      panMinLimitDeg(), panMaxLimitDeg());
-  tiltAngleDeg = constrain(
-      TILT_START_DEG + (remoteTiltInput * ((tiltMaxLimitDeg() - tiltMinLimitDeg()) * 0.5f)),
-      tiltMinLimitDeg(), tiltMaxLimitDeg());
-  applyLedFromPanTilt(nowMs);
-  sendLedPacket();
-#else
-  (void)nowMs;
-#endif
-}
-
 void printStatus(uint32_t nowMs) {
   const bool logsEnabled = ENABLE_RUNTIME_STATUS_LOGS;
   if (!logsEnabled) {
@@ -2869,45 +2352,6 @@ void printStatus(uint32_t nowMs) {
   }
   lastStatusPrintMs = nowMs;
 
-#if defined(DEVICE_ROLE_CONTROLLER)
-  const char* xboxState = controller.isConnected() ? "ok" : "missing";
-  const String remoteTimeText = formatUnixTimeUtc(remoteReportedUnixTimeUtc);
-  if (SHOW_SERVO_PULSE_US_IN_LOGS) {
-    Serial.printf(
-        "ROLE=controller | xbox=%s | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f us=%4d range=%d..%d | tilt=%7.3f us=%4d range=%d..%d | d_pan=%+7.3f d_tilt=%+7.3f | target=%s | sun_time=%s | remote_utc=%s\n",
-        xboxState,
-        espNowPeerReady ? "ok" : "missing",
-        lastSendOk ? "ok" : "pending",
-        autoTrackEnabled ? "on" : "off",
-        controlModeName(remoteReportedControlMode),
-        remoteReportedPanAngleDeg,
-        remoteReportedPanPulseUs,
-        PAN_SERVO_MIN_PULSE_US, PAN_SERVO_MAX_PULSE_US,
-        remoteReportedTiltAngleDeg,
-        remoteReportedTiltPulseUs,
-        TILT_SERVO_MIN_PULSE_US, TILT_SERVO_MAX_PULSE_US,
-        remoteReportedPanTargetDeg - remoteReportedCapturedPanAngleDeg,
-        remoteReportedTiltTargetDeg - remoteReportedCapturedTiltAngleDeg,
-        remoteReportedTargetDirectionValid ? "ok" : "missing",
-        remoteReportedSunTimeValid ? "ok" : "missing",
-        remoteTimeText.c_str());
-  } else {
-    Serial.printf(
-        "ROLE=controller | xbox=%s | peer=%s | tx=%s | auto=%s | remote_mode=%s | pan=%7.3f | tilt=%7.3f | d_pan=%+7.3f d_tilt=%+7.3f | target=%s | sun_time=%s | remote_utc=%s\n",
-        xboxState,
-        espNowPeerReady ? "ok" : "missing",
-        lastSendOk ? "ok" : "pending",
-        autoTrackEnabled ? "on" : "off",
-        controlModeName(remoteReportedControlMode),
-        remoteReportedPanAngleDeg,
-        tiltExternalFromInternalDeg(remoteReportedTiltAngleDeg),
-        remoteReportedPanTargetDeg - remoteReportedCapturedPanAngleDeg,
-        remoteReportedTiltTargetDeg - remoteReportedCapturedTiltAngleDeg,
-        remoteReportedTargetDirectionValid ? "ok" : "missing",
-        remoteReportedSunTimeValid ? "ok" : "missing",
-        remoteTimeText.c_str());
-  }
-#else
   const uint32_t ageMs = packetReceived ? (nowMs - lastRxMs) : 0;
   Serial.printf(
       "ROLE=remote | mode=%s | wifi=%s | mqtt=%s | ntp=%s | rx=%s | age_ms=%lu | pan=%7.3f | tilt=%7.3f | target=%7.3f/%7.3f | pan_pos=%d | tilt_pos=%d | pan_v=%.1f | tilt_v=%.1f | sun_time=%s | target=%s\n",
@@ -2924,27 +2368,7 @@ void printStatus(uint32_t nowMs) {
       static_cast<float>(st3020TiltVoltageTenths) / 10.0f,
       sunTimeValid ? "ok" : "missing",
       targetDirectionValid ? "ok" : "missing");
-#endif
 }
-
-#if defined(DEVICE_ROLE_CONTROLLER)
-void onControllerConnect(NimBLEAddress address) {
-  (void)address;
-  xboxConnected = true;
-  autoTrackEnabled = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
-  blinkActive = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
-  pendingControllerSyncPacket = true;
-  pendingControllerConnectLog = true;
-}
-
-void onControllerDisconnect(NimBLEAddress address) {
-  (void)address;
-  xboxConnected = false;
-  blinkActive = (remoteReportedControlMode == CONTROL_MODE_AUTO_TRACK);
-  pendingControllerSyncPacket = true;
-  pendingControllerDisconnectLog = true;
-}
-#endif
 
 }  // namespace
 
@@ -2957,28 +2381,10 @@ void setup() {
   setStatusLedBlue();
   delay(100);
 
-  bootMs = millis();
-  lastControlUpdateMs = millis();
   lastStatusPrintMs = millis();
 
-#if defined(DEVICE_ROLE_CONTROLLER)
-  setupEspNowWifi();
-  ensureEspNow();
-  ensureBroadcastPeer();
-  esp_now_register_recv_cb(onEspNowReceived);
-  esp_now_register_send_cb(onEspNowSent);
-  if (CLEAR_XBOX_BONDS_ON_BOOT) {
-    BLEControllerRegistry::deleteBonds();
-    Serial.println("BLE bonds cleared on boot.");
-  }
-  controller.onConnect(onControllerConnect);
-  controller.onDisconnect(onControllerDisconnect);
-  controller.begin();
-  applyLedFromPanTilt(millis());
-#else
   beginRemoteActuators();
   beginRemoteMqtt();
-#endif
 
   Serial.println();
   Serial.println("ESP32 heliostat link test");
@@ -2991,15 +2397,6 @@ void setup() {
   Serial.printf("WiFi STA MAC=%s | channel=%u\n",
                 WiFi.macAddress().c_str(), static_cast<unsigned>(WiFi.channel()));
 
-#if defined(DEVICE_ROLE_CONTROLLER)
-  Serial.println("Remote peer MAC=auto");
-  Serial.printf("CLEAR_XBOX_BONDS_ON_BOOT=%s\n", CLEAR_XBOX_BONDS_ON_BOOT ? "true" : "false");
-  Serial.println("Xbox node: left stick = target angle movement, button A = recenter, LB = slow manual mode.");
-  Serial.println("Pan model reference: pan=180 deg means mirror normal points south.");
-  Serial.println("Button X captures the reflected target. Button Y toggles heliostat auto-track. Button B prints TRACK_DIAG.");
-  Serial.println("Serial: T=<unix_utc_seconds>, TIME?.");
-  Serial.println("Flash env: controller on the ESP32 with the Xbox controller.");
-#else
   Serial.println("Remote node ready.");
   Serial.printf("WiFi target SSID=%s | MQTT=%s:%u | topic=%s\n",
                 REMOTE_WIFI_SSID_VALUE, REMOTE_MQTT_HOST_VALUE,
@@ -3019,17 +2416,10 @@ void setup() {
                 static_cast<long long>(heliostatStartUnixTimeUtc));
   Serial.printf("Runtime status logs: %s\n", ENABLE_RUNTIME_STATUS_LOGS ? "on" : "off");
   Serial.println("Use a dedicated 5-6V supply for MG996R servos and share GND with the ESP32.");
-#endif
 }
 
 void loop() {
   const uint32_t nowMs = millis();
-#if defined(DEVICE_ROLE_CONTROLLER)
-  handleSerialInput();
-  serviceControllerDeferredActions(nowMs);
-#endif
-  updateLedFromXbox(nowMs);
-#if defined(DEVICE_ROLE_REMOTE)
   handleSerialInput();
   ensureRemoteWifiConnected(nowMs);
   ensureRemoteNtpTime(nowMs);
@@ -3042,6 +2432,5 @@ void loop() {
   moveServosTowardTargets(nowMs);
   applyLedFromPanTilt(nowMs);
   publishRemoteState();
-#endif
   printStatus(nowMs);
 }
