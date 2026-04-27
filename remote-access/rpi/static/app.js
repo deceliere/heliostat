@@ -398,7 +398,20 @@ function applyCalibrationPresetToInputs(preset) {
   loadCalibrationInputs(preset, preset.name);
 }
 
+function armDriftBaselineOnManualTransition() {
+  if (latestState.mode === "manual") {
+    return;
+  }
+  const baseline = snapshotDriftBaseline();
+  if (!baseline) {
+    return;
+  }
+  driftBaseline = baseline;
+  updateDriftBaselinePill();
+}
+
 async function sendJog(axis, direction, multiplier = 1.0) {
+  armDriftBaselineOnManualTransition();
   await postJson("/api/cmd/mode", { mode: "manual" });
   await postJson("/api/cmd/jog", {
     axis,
@@ -620,6 +633,7 @@ function bindControlButtons() {
 
   moveToButton?.addEventListener("click", async () => {
     await stopJogging();
+    armDriftBaselineOnManualTransition();
     await postJson("/api/cmd/move-to", readAbsoluteTargets());
     await refreshUi();
   });
@@ -837,6 +851,7 @@ function bindControlButtons() {
     if (tiltInput) {
       tiltInput.value = String(latestState.scan_lock_tilt_deg);
     }
+    armDriftBaselineOnManualTransition();
     await postJson("/api/cmd/move-to", {
       pan_deg: latestState.scan_lock_pan_deg,
       tilt_deg: latestState.scan_lock_tilt_deg,
@@ -1111,6 +1126,7 @@ async function refreshUi() {
     setText("state-actual", `${formatAngleValue(state.pan_deg)} / ${formatAngleValue(state.tilt_deg)}`);
     setText("state-target", `${formatAngleValue(state.pan_target_deg)} / ${formatAngleValue(state.tilt_target_deg)}`);
     setText("state-predicted", `${formatAngleValue(state.predicted_pan_deg)} / ${formatAngleValue(state.predicted_tilt_deg)}`);
+    setText("state-beam", `${formatAngleValue(state.beam_bearing_deg)} / ${formatAngleValue(state.beam_elevation_deg)}`);
     setText("state-error", `${formatAngleValue(state.pan_tracking_error_deg)} / ${formatAngleValue(state.tilt_tracking_error_deg)}`);
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {
@@ -1118,6 +1134,7 @@ async function refreshUi() {
     setText("state-actual", "—");
     setText("state-target", "—");
     setText("state-predicted", "—");
+    setText("state-beam", "—");
     setText("state-error", "—");
     setText("state-output", String(error));
   }

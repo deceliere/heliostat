@@ -1555,11 +1555,17 @@ void publishRemoteState(bool force = false) {
     float currentNormalElevationDeg = 0.0f;
     bearingElevationFromVector(sunDirection, sunBearingDeg, sunElevationDeg);
     const Vec3 currentNormal = mirrorNormalFromPanTilt(panAngleDeg, tiltAngleDeg);
+    const Vec3 currentBeamDirection = normalizeVec3(reflectVector(scaleVec3(sunDirection, -1.0f), currentNormal));
+    float currentBeamBearingDeg = 0.0f;
+    float currentBeamElevationDeg = 0.0f;
     bearingElevationFromVector(currentNormal, currentNormalBearingDeg, currentNormalElevationDeg);
+    bearingElevationFromVector(currentBeamDirection, currentBeamBearingDeg, currentBeamElevationDeg);
     doc["sun_bearing_deg"] = sunBearingDeg;
     doc["sun_elevation_deg"] = sunElevationDeg;
     doc["normal_bearing_deg"] = currentNormalBearingDeg;
     doc["normal_elevation_deg"] = currentNormalElevationDeg;
+    doc["beam_bearing_deg"] = currentBeamBearingDeg;
+    doc["beam_elevation_deg"] = currentBeamElevationDeg;
     if (targetDirectionValid) {
       float targetBearingDeg = 0.0f;
       float targetElevationDeg = 0.0f;
