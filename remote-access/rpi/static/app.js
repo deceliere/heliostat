@@ -46,7 +46,7 @@ async function postJson(url, payload) {
   return response.json();
 }
 
-let selectedStepDeg = 0.1;
+let selectedStepDeg = 1;
 let jogRepeatTimer = null;
 let activeJogKey = null;
 let latestState = {};
@@ -56,6 +56,11 @@ let driftBaseline = null;
 let scanSpeedSlider = null;
 let scanDwellSlider = null;
 let calibrationInputsInitialized = false;
+const presetRenderSignatures = {
+  site: "",
+  beam: "",
+  calibration: "",
+};
 
 function readScanServoSpeed(speedValue) {
   const rawSpeed = Number(speedValue);
@@ -333,11 +338,23 @@ function renderPresetSelect(selectId, items) {
 }
 
 function renderPresets() {
+  const siteSignature = JSON.stringify(latestPresets.site_locations ?? []);
+  const beamSignature = JSON.stringify(latestPresets.beam_directions ?? []);
+  const calibrationSignature = JSON.stringify(latestPresets.calibration_presets ?? []);
   const calibrationSelect = document.getElementById("calibration-preset-select");
   const previousCalibrationValue = calibrationSelect?.value ?? "";
-  renderPresetSelect("site-preset-select", latestPresets.site_locations ?? []);
-  renderPresetSelect("beam-preset-select", latestPresets.beam_directions ?? []);
-  renderPresetSelect("calibration-preset-select", latestPresets.calibration_presets ?? []);
+  if (siteSignature !== presetRenderSignatures.site) {
+    renderPresetSelect("site-preset-select", latestPresets.site_locations ?? []);
+    presetRenderSignatures.site = siteSignature;
+  }
+  if (beamSignature !== presetRenderSignatures.beam) {
+    renderPresetSelect("beam-preset-select", latestPresets.beam_directions ?? []);
+    presetRenderSignatures.beam = beamSignature;
+  }
+  if (calibrationSignature !== presetRenderSignatures.calibration) {
+    renderPresetSelect("calibration-preset-select", latestPresets.calibration_presets ?? []);
+    presetRenderSignatures.calibration = calibrationSignature;
+  }
   const updatedCalibrationSelect = document.getElementById("calibration-preset-select");
   if (updatedCalibrationSelect && !updatedCalibrationSelect.querySelector('option[value="__firmware_default__"]')) {
     const option = document.createElement("option");

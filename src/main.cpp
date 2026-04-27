@@ -69,7 +69,7 @@ constexpr uint8_t ST3020_DEFAULT_ACC = 50;
 constexpr bool ST3020_HOLD_TORQUE_ENABLED = false;
 constexpr uint32_t ST3020_FEEDBACK_POLL_MS = 50;
 constexpr int ST3020_SETTLE_TOLERANCE_POS = 2;
-constexpr uint8_t ST3020_MAX_FINAL_CORRECTIONS = 8;
+constexpr uint8_t ST3020_MAX_FINAL_CORRECTIONS = 2;
 constexpr int ST3020_FEEDBACK_TRIM_STEP_POS = 3;
 constexpr int ST3020_FEEDBACK_OVERSHOOT_POS = 4;
 constexpr uint8_t ST3020_MAX_FEEDBACK_OVERSHOOTS = 4;
@@ -79,7 +79,7 @@ constexpr uint32_t ST3020_MOVE_MIN_COMMAND_MS = 80;
 constexpr bool ST3020_AUTO_APPROACH_ENABLED = false;
 constexpr float ST3020_AUTO_APPROACH_PAN_OFFSET_DEG = -5.0f;
 constexpr float ST3020_AUTO_APPROACH_TILT_OFFSET_DEG = 5.0f;
-constexpr bool ST3020_FEEDBACK_CORRECTION_ENABLED = true;
+constexpr bool ST3020_FEEDBACK_CORRECTION_ENABLED = false;
 constexpr float ST3020_PAN_SIGN = 1.0f;
 constexpr float ST3020_TILT_SIGN = -1.0f;
 constexpr int ST3020_PAN_POS_AT_90_DEG = 1024;
@@ -1209,7 +1209,7 @@ void serviceSt3020AutoMotion(uint32_t nowMs) {
   if (st3020MotionStage == ST3020_MOTION_IDLE) {
     if (finalTargetChanged) {
       scheduleSt3020AutoMotion(nowMs);
-    } else if (needsFeedbackCorrection) {
+    } else if (ST3020_FEEDBACK_CORRECTION_ENABLED && needsFeedbackCorrection) {
       st3020MotionFinalPanPosition = desiredFinalPanPosition;
       st3020MotionFinalTiltPosition = desiredFinalTiltPosition;
       beginSt3020FeedbackTrimStep(nowMs);
