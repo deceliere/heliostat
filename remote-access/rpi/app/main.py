@@ -78,6 +78,11 @@ runtime_state = {
     "sun_elevation_deg": None,
     "normal_bearing_deg": None,
     "normal_elevation_deg": None,
+    "beam_bearing_deg": None,
+    "beam_elevation_deg": None,
+    "beam_target_ok": False,
+    "beam_target_bearing_deg": None,
+    "beam_target_elevation_deg": None,
     "target_bearing_deg": None,
     "target_elevation_deg": None,
     "desired_normal_bearing_deg": None,
@@ -295,6 +300,11 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           sun_elevation_deg=data.get("sun_elevation_deg"),
           normal_bearing_deg=data.get("normal_bearing_deg"),
           normal_elevation_deg=data.get("normal_elevation_deg"),
+          beam_bearing_deg=data.get("beam_bearing_deg"),
+          beam_elevation_deg=data.get("beam_elevation_deg"),
+          beam_target_ok=bool(data.get("beam_target_ok", data.get("target_ok", False))),
+          beam_target_bearing_deg=data.get("beam_target_bearing_deg", data.get("target_bearing_deg")),
+          beam_target_elevation_deg=data.get("beam_target_elevation_deg", data.get("target_elevation_deg")),
           target_bearing_deg=data.get("target_bearing_deg"),
           target_elevation_deg=data.get("target_elevation_deg"),
           desired_normal_bearing_deg=data.get("desired_normal_bearing_deg"),
@@ -378,13 +388,28 @@ def api_drift() -> dict:
 @app.post("/api/drift/sample")
 def api_drift_sample(payload: dict) -> dict:
     samples = load_drift_samples()
+    baseline = payload.get("baseline", {})
+    state = payload.get("state", {})
     sample = {
         "timestamp_unix_ms": int(round(time.time() * 1000)),
         "label": str(payload.get("label", "")).strip(),
         "pan_correction_deg": payload.get("pan_correction_deg"),
         "tilt_correction_deg": payload.get("tilt_correction_deg"),
         "note": str(payload.get("note", "")).strip(),
-        "state": payload.get("state", {}),
+        "baseline": baseline,
+        "state": state,
+        "baseline_beam_actual_bearing_deg": baseline.get("beam_bearing_deg"),
+        "baseline_beam_actual_elevation_deg": baseline.get("beam_elevation_deg"),
+        "baseline_beam_target_bearing_deg": baseline.get("beam_target_bearing_deg"),
+        "baseline_beam_target_elevation_deg": baseline.get("beam_target_elevation_deg"),
+        "baseline_beam_bearing_deg": baseline.get("beam_bearing_deg"),
+        "baseline_beam_elevation_deg": baseline.get("beam_elevation_deg"),
+        "recorded_beam_actual_bearing_deg": state.get("beam_bearing_deg"),
+        "recorded_beam_actual_elevation_deg": state.get("beam_elevation_deg"),
+        "recorded_beam_target_bearing_deg": state.get("beam_target_bearing_deg", state.get("target_bearing_deg")),
+        "recorded_beam_target_elevation_deg": state.get("beam_target_elevation_deg", state.get("target_elevation_deg")),
+        "recorded_beam_bearing_deg": state.get("beam_bearing_deg"),
+        "recorded_beam_elevation_deg": state.get("beam_elevation_deg"),
     }
     samples.append(sample)
     save_drift_samples(samples)

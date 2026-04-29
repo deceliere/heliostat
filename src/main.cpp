@@ -1540,6 +1540,7 @@ void publishRemoteState(bool force = false) {
   doc["approx_target_tilt_deg"] = tiltExternalFromInternalDeg(approxTargetTiltDeg);
   doc["sun_time_ok"] = sunTimeValid;
   doc["target_ok"] = targetDirectionValid;
+  doc["beam_target_ok"] = targetDirectionValid;
   doc["auto_enabled"] = autoTrackEnabled;
   doc["wifi_ok"] = wifiLinkOk;
   doc["mqtt_ok"] = mqttLinkOk;
@@ -1572,6 +1573,8 @@ void publishRemoteState(bool force = false) {
       bearingElevationFromVector(targetDirection, targetBearingDeg, targetElevationDeg);
       doc["target_bearing_deg"] = targetBearingDeg;
       doc["target_elevation_deg"] = targetElevationDeg;
+      doc["beam_target_bearing_deg"] = targetBearingDeg;
+      doc["beam_target_elevation_deg"] = targetElevationDeg;
 
       Vec3 desiredNormal = normalizeVec3(addVec3(sunDirection, targetDirection));
       if (lengthVec3(desiredNormal) > 0.0f && dotVec3(currentNormal, desiredNormal) < 0.0f) {

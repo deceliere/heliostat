@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 from dataclasses import dataclass
@@ -40,6 +41,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print one compact line per sample",
     )
+    parser.add_argument(
+        "--svg",
+        nargs="?",
+        const="",
+        metavar="OUTPUT",
+        help="Write a self-contained SVG graph. Default: next to JSON with .svg extension",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +55,14 @@ def require_number(value: object, field: str) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     raise ValueError(f"Missing or invalid numeric field: {field}")
+
+
+def first_present(mapping: dict, *keys: str) -> object:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 def load_rows(path: Path) -> list[DriftRow]:
@@ -70,8 +86,14 @@ def load_rows(path: Path) -> list[DriftRow]:
                 tilt_correction_deg=require_number(item.get("tilt_correction_deg"), "tilt_correction_deg"),
                 sun_bearing_deg=require_number(state.get("sun_bearing_deg"), "state.sun_bearing_deg"),
                 sun_elevation_deg=require_number(state.get("sun_elevation_deg"), "state.sun_elevation_deg"),
-                target_bearing_deg=require_number(state.get("target_bearing_deg"), "state.target_bearing_deg"),
-                target_elevation_deg=require_number(state.get("target_elevation_deg"), "state.target_elevation_deg"),
+                target_bearing_deg=require_number(
+                    first_present(state, "beam_target_bearing_deg", "target_bearing_deg"),
+                    "state.beam_target_bearing_deg|state.target_bearing_deg",
+                ),
+                target_elevation_deg=require_number(
+                    first_present(state, "beam_target_elevation_deg", "target_elevation_deg"),
+                    "state.beam_target_elevation_deg|state.target_elevation_deg",
+                ),
                 pan_deg=require_number(state.get("pan_deg"), "state.pan_deg"),
                 tilt_deg=require_number(state.get("tilt_deg"), "state.tilt_deg"),
                 pan_target_deg=require_number(state.get("pan_target_deg"), "state.pan_target_deg"),
@@ -112,6 +134,211 @@ def linear_fit(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
     intercept = mean_y - slope * mean_x
     correlation = cov / math.sqrt(var_x * var_y)
     return slope, intercept, correlation
+
+
+def value_range(series_list: list[list[float]]) -> tuple[float, float]:
+    values = [value for series in series_list for value in series if math.isfinite(value)]
+    if not values:
+        return -1.0, 1.0
+    minimum = min(values)
+    maximum = max(values)
+    if math.isclose(minimum, maximum, abs_tol=1e-9):
+        padding = 1.0 if math.isclose(minimum, 0.0, abs_tol=1e-9) else abs(minimum) * 0.2
+        return minimum - padding, maximum + padding
+    padding = max(0.2, (maximum - minimum) * 0.12)
+    return minimum - padding, maximum + padding
+
+
+def scale_point(
+    x_value: float,
+    y_value: float,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    plot_x: float,
+    plot_y: float,
+    plot_width: float,
+    plot_height: float,
+) -> tuple[float, float]:
+    x_ratio = 0.0 if math.isclose(x_min, x_max) else (x_value - x_min) / (x_max - x_min)
+    y_ratio = 0.0 if math.isclose(y_min, y_max) else (y_value - y_min) / (y_max - y_min)
+    x = plot_x + (x_ratio * plot_width)
+    y = plot_y + plot_height - (y_ratio * plot_height)
+    return x, y
+
+
+def polyline_points(
+    xs: list[float],
+    ys: list[float],
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    plot_x: float,
+    plot_y: float,
+    plot_width: float,
+    plot_height: float,
+) -> str:
+    points: list[str] = []
+    for x_value, y_value in zip(xs, ys):
+        x, y = scale_point(
+            x_value, y_value, x_min, x_max, y_min, y_max, plot_x, plot_y, plot_width, plot_height
+        )
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
+
+
+def fit_line_points(
+    xs: list[float],
+    ys: list[float],
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    plot_x: float,
+    plot_y: float,
+    plot_width: float,
+    plot_height: float,
+) -> str:
+    slope, intercept, _ = linear_fit(xs, ys)
+    if not math.isfinite(slope) or not math.isfinite(intercept):
+        return ""
+    x0, y0 = scale_point(
+        x_min, slope * x_min + intercept, x_min, x_max, y_min, y_max, plot_x, plot_y, plot_width, plot_height
+    )
+    x1, y1 = scale_point(
+        x_max, slope * x_max + intercept, x_min, x_max, y_min, y_max, plot_x, plot_y, plot_width, plot_height
+    )
+    return f"{x0:.1f},{y0:.1f} {x1:.1f},{y1:.1f}"
+
+
+def chart_svg(
+    title: str,
+    x_label: str,
+    y_label: str,
+    xs: list[float],
+    series: list[tuple[str, list[float], str]],
+    top_y: float,
+) -> str:
+    width = 1020
+    height = 320
+    left = 72
+    right = 24
+    top = top_y + 34
+    bottom = 52
+    plot_width = width - left - right
+    plot_height = height - 72
+    x_min = min(xs) if xs else 0.0
+    x_max = max(xs) if xs else 1.0
+    y_min, y_max = value_range([values for _, values, _ in series])
+
+    y_ticks = 5
+    x_ticks = 6
+    parts = [
+        f'<text x="{left}" y="{top_y + 18:.1f}" font-size="16" font-weight="600" fill="#dbe4ff">{html.escape(title)}</text>',
+        f'<rect x="{left}" y="{top:.1f}" width="{plot_width:.1f}" height="{plot_height:.1f}" rx="10" fill="#08111f" stroke="#23324a"/>',
+    ]
+
+    for index in range(y_ticks + 1):
+        ratio = index / y_ticks
+        y_value = y_min + ((y_max - y_min) * ratio)
+        y = top + plot_height - (ratio * plot_height)
+        parts.append(
+            f'<line x1="{left:.1f}" y1="{y:.1f}" x2="{left + plot_width:.1f}" y2="{y:.1f}" stroke="#1b2a40" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{left - 10:.1f}" y="{y + 4:.1f}" text-anchor="end" font-size="11" fill="#93a4bf">{y_value:+.2f}</text>'
+        )
+
+    for index in range(x_ticks + 1):
+        ratio = index / x_ticks
+        x_value = x_min + ((x_max - x_min) * ratio)
+        x = left + (ratio * plot_width)
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{top:.1f}" x2="{x:.1f}" y2="{top + plot_height:.1f}" stroke="#132136" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{x:.1f}" y="{top + plot_height + 18:.1f}" text-anchor="middle" font-size="11" fill="#93a4bf">{x_value:.0f}</text>'
+        )
+
+    zero_y = None
+    if y_min <= 0.0 <= y_max:
+        _, zero_y = scale_point(0.0, 0.0, 0.0, 1.0, y_min, y_max, 0.0, top, 1.0, plot_height)
+        parts.append(
+            f'<line x1="{left:.1f}" y1="{zero_y:.1f}" x2="{left + plot_width:.1f}" y2="{zero_y:.1f}" stroke="#5a6c8c" stroke-width="1.2" stroke-dasharray="4 4"/>'
+        )
+
+    legend_x = left + 12
+    legend_y = top + 18
+    for index, (name, values, color) in enumerate(series):
+        polyline = polyline_points(xs, values, x_min, x_max, y_min, y_max, left, top, plot_width, plot_height)
+        parts.append(
+            f'<polyline fill="none" stroke="{color}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" points="{polyline}"/>'
+        )
+        fit_points = fit_line_points(xs, values, x_min, x_max, y_min, y_max, left, top, plot_width, plot_height)
+        if fit_points:
+            parts.append(
+                f'<polyline fill="none" stroke="{color}" stroke-opacity="0.55" stroke-width="1.4" stroke-dasharray="6 5" points="{fit_points}"/>'
+            )
+        legend_item_y = legend_y + (index * 18)
+        parts.append(
+            f'<line x1="{legend_x:.1f}" y1="{legend_item_y:.1f}" x2="{legend_x + 18:.1f}" y2="{legend_item_y:.1f}" stroke="{color}" stroke-width="3"/>'
+        )
+        parts.append(
+            f'<text x="{legend_x + 24:.1f}" y="{legend_item_y + 4:.1f}" font-size="11" fill="#c9d6ea">{html.escape(name)}</text>'
+        )
+
+    parts.append(
+        f'<text x="{left + plot_width / 2:.1f}" y="{top + plot_height + 38:.1f}" text-anchor="middle" font-size="12" fill="#93a4bf">{html.escape(x_label)}</text>'
+    )
+    parts.append(
+        f'<text x="18" y="{top + plot_height / 2:.1f}" text-anchor="middle" font-size="12" fill="#93a4bf" transform="rotate(-90 18 {top + plot_height / 2:.1f})">{html.escape(y_label)}</text>'
+    )
+    return "\n".join(parts)
+
+
+def write_svg(rows: list[DriftRow], output_path: Path) -> None:
+    first = rows[0]
+    elapsed_minutes = [
+        (row.timestamp_unix_ms - first.timestamp_unix_ms) / 60_000.0 for row in rows
+    ]
+    pan_error = [row.pan_tracking_error_deg for row in rows]
+    tilt_error = [row.tilt_tracking_error_deg for row in rows]
+    pan_corr = [row.pan_correction_deg for row in rows]
+    tilt_corr = [row.tilt_correction_deg for row in rows]
+
+    header = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1020" height="760" viewBox="0 0 1020 760" role="img">\n'
+        '<rect width="1020" height="760" fill="#0f1726"/>\n'
+        '<text x="28" y="34" font-size="22" font-weight="700" fill="#eef4ff">Heliostat Drift Analysis</text>\n'
+        f'<text x="28" y="56" font-size="12" fill="#93a4bf">{html.escape(output_path.stem)}</text>\n'
+    )
+    chart1 = chart_svg(
+        "Model residual vs time",
+        "Elapsed time (minutes)",
+        "Residual (degrees)",
+        elapsed_minutes,
+        [
+            ("Pan residual", pan_error, "#60a5fa"),
+            ("Tilt residual", tilt_error, "#f97316"),
+        ],
+        top_y=86,
+    )
+    chart2 = chart_svg(
+        "Manual correction vs time",
+        "Elapsed time (minutes)",
+        "Correction (degrees)",
+        elapsed_minutes,
+        [
+            ("Pan correction", pan_corr, "#34d399"),
+            ("Tilt correction", tilt_corr, "#f472b6"),
+        ],
+        top_y=430,
+    )
+    footer = "\n</svg>\n"
+    output_path.write_text(header + chart1 + "\n" + chart2 + footer, encoding="utf-8")
 
 
 def print_summary(rows: list[DriftRow]) -> None:
@@ -198,6 +425,11 @@ def main() -> int:
     print_summary(rows)
     if args.table:
         print_table(rows)
+    if args.svg is not None:
+        output_path = Path(args.svg) if args.svg else args.json_file.with_suffix(".svg")
+        write_svg(rows, output_path)
+        print()
+        print(f"SVG written to: {output_path}")
     return 0
 
 

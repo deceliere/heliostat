@@ -232,6 +232,10 @@ function snapshotDriftBaseline() {
     tilt_target_deg: latestState.tilt_target_deg,
     sun_bearing_deg: latestState.sun_bearing_deg,
     sun_elevation_deg: latestState.sun_elevation_deg,
+    beam_bearing_deg: latestState.beam_bearing_deg,
+    beam_elevation_deg: latestState.beam_elevation_deg,
+    beam_target_bearing_deg: latestState.beam_target_bearing_deg ?? latestState.target_bearing_deg,
+    beam_target_elevation_deg: latestState.beam_target_elevation_deg ?? latestState.target_elevation_deg,
     predicted_pan_deg: latestState.predicted_pan_deg,
     predicted_tilt_deg: latestState.predicted_tilt_deg,
   };
@@ -1110,7 +1114,8 @@ async function refreshUi() {
 
     setStatusPill("drift-sun", formatAnglePair(state.sun_bearing_deg, state.sun_elevation_deg), typeof state.sun_bearing_deg === "number" ? "slate" : "amber");
     setStatusPill("drift-normal", formatAnglePair(state.normal_bearing_deg, state.normal_elevation_deg), typeof state.normal_bearing_deg === "number" ? "slate" : "amber");
-    setStatusPill("drift-target", formatAnglePair(state.target_bearing_deg, state.target_elevation_deg), typeof state.target_bearing_deg === "number" ? "slate" : "amber");
+    setStatusPill("drift-beam", formatAnglePair(state.beam_bearing_deg, state.beam_elevation_deg), typeof state.beam_bearing_deg === "number" ? "slate" : "amber");
+    setStatusPill("drift-target", formatAnglePair(state.beam_target_bearing_deg ?? state.target_bearing_deg, state.beam_target_elevation_deg ?? state.target_elevation_deg), typeof (state.beam_target_bearing_deg ?? state.target_bearing_deg) === "number" ? "slate" : "amber");
     setStatusPill("drift-desired-normal", formatAnglePair(state.desired_normal_bearing_deg, state.desired_normal_elevation_deg), typeof state.desired_normal_bearing_deg === "number" ? "slate" : "amber");
     setStatusPill("drift-predicted", formatAnglePair(state.predicted_pan_deg, state.predicted_tilt_deg), typeof state.predicted_pan_deg === "number" ? "slate" : "amber");
     const errorTone =
