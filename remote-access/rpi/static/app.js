@@ -62,6 +62,14 @@ const presetRenderSignatures = {
   calibration: "",
 };
 
+async function setDriftBaseline(baseline) {
+  driftBaseline = baseline;
+  updateDriftBaselinePill();
+  const result = await postJson("/api/drift/baseline", { baseline });
+  driftBaseline = result.baseline ?? null;
+  updateDriftBaselinePill();
+}
+
 function readScanServoSpeed(speedValue) {
   const rawSpeed = Number(speedValue);
   if (!Number.isFinite(rawSpeed)) {
@@ -181,7 +189,7 @@ function renderDriftSamples() {
   }
 
   if (!latestDriftSamples.length) {
-    body.innerHTML = '<tr><td colspan="9">No samples</td></tr>';
+    body.innerHTML = '<tr><td colspan="7">No samples</td></tr>';
     return;
   }
 
@@ -191,25 +199,25 @@ function renderDriftSamples() {
     .map((sample) => {
       const state = sample.state ?? {};
       const time = formatUnixMs(sample.timestamp_unix_ms);
-      const label = sample.label || "—";
       const panCorrection = Number.isFinite(Number(sample.pan_correction_deg))
         ? Number(sample.pan_correction_deg).toFixed(2)
         : "—";
       const tiltCorrection = Number.isFinite(Number(sample.tilt_correction_deg))
         ? Number(sample.tilt_correction_deg).toFixed(2)
         : "—";
-      const pan = typeof state.pan_deg === "number" ? state.pan_deg.toFixed(2) : "—";
-      const tilt = typeof state.tilt_deg === "number" ? state.tilt_deg.toFixed(2) : "—";
+      const beam = formatAnglePair(
+        sample.recorded_beam_actual_bearing_deg ?? state.beam_bearing_deg,
+        sample.recorded_beam_actual_elevation_deg ?? state.beam_elevation_deg,
+        "°"
+      );
       const sun = formatAnglePair(state.sun_bearing_deg, state.sun_elevation_deg, "°");
       const error = formatAnglePair(state.pan_tracking_error_deg, state.tilt_tracking_error_deg, "°");
       const note = sample.note || "—";
       return `<tr>
         <td>${time}</td>
-        <td>${label}</td>
         <td>${panCorrection}</td>
         <td>${tiltCorrection}</td>
-        <td>${pan}</td>
-        <td>${tilt}</td>
+        <td>${beam}</td>
         <td>${sun}</td>
         <td>${error}</td>
         <td>${note}</td>
@@ -402,7 +410,7 @@ function applyCalibrationPresetToInputs(preset) {
   loadCalibrationInputs(preset, preset.name);
 }
 
-function armDriftBaselineOnManualTransition() {
+async function armDriftBaselineOnManualTransition() {
   if (latestState.mode === "manual") {
     return;
   }
@@ -410,12 +418,11 @@ function armDriftBaselineOnManualTransition() {
   if (!baseline) {
     return;
   }
-  driftBaseline = baseline;
-  updateDriftBaselinePill();
+  await setDriftBaseline(baseline);
 }
 
 async function sendJog(axis, direction, multiplier = 1.0) {
-  armDriftBaselineOnManualTransition();
+  await armDriftBaselineOnManualTransition();
   await postJson("/api/cmd/mode", { mode: "manual" });
   await postJson("/api/cmd/jog", {
     axis,
@@ -606,8 +613,7 @@ function bindControlButtons() {
 
   manualButton?.addEventListener("click", async () => {
     await stopJogging();
-    driftBaseline = snapshotDriftBaseline();
-    updateDriftBaselinePill();
+    await setDriftBaseline(snapshotDriftBaseline());
     await postJson("/api/cmd/mode", { mode: "manual" });
     await refreshUi();
   });
@@ -637,7 +643,7 @@ function bindControlButtons() {
 
   moveToButton?.addEventListener("click", async () => {
     await stopJogging();
-    armDriftBaselineOnManualTransition();
+    await armDriftBaselineOnManualTransition();
     await postJson("/api/cmd/move-to", readAbsoluteTargets());
     await refreshUi();
   });
@@ -855,7 +861,7 @@ function bindControlButtons() {
     if (tiltInput) {
       tiltInput.value = String(latestState.scan_lock_tilt_deg);
     }
-    armDriftBaselineOnManualTransition();
+    await armDriftBaselineOnManualTransition();
     await postJson("/api/cmd/move-to", {
       pan_deg: latestState.scan_lock_pan_deg,
       tilt_deg: latestState.scan_lock_tilt_deg,
@@ -864,14 +870,12 @@ function bindControlButtons() {
   });
 
   armDriftBaselineButton?.addEventListener("click", async () => {
-    driftBaseline = snapshotDriftBaseline();
-    updateDriftBaselinePill();
+    await setDriftBaseline(snapshotDriftBaseline());
   });
 
   recordDriftSampleButton?.addEventListener("click", async () => {
     if (!driftBaseline) {
-      driftBaseline = snapshotDriftBaseline();
-      updateDriftBaselinePill();
+      await setDriftBaseline(snapshotDriftBaseline());
       return;
     }
 
@@ -897,8 +901,7 @@ function bindControlButtons() {
     const result = await postJson("/api/drift/sample", payload);
     latestDriftSamples = result.samples ?? latestDriftSamples;
     renderDriftSamples();
-    driftBaseline = snapshotDriftBaseline();
-    updateDriftBaselinePill();
+    await setDriftBaseline(snapshotDriftBaseline());
   });
 
   exportDriftSamplesButton?.addEventListener("click", () => {
@@ -916,7 +919,9 @@ function bindControlButtons() {
   clearDriftSamplesButton?.addEventListener("click", async () => {
     const result = await postJson("/api/drift/clear", {});
     latestDriftSamples = result.samples ?? [];
+    driftBaseline = result.baseline ?? null;
     renderDriftSamples();
+    updateDriftBaselinePill();
   });
 }
 
@@ -926,6 +931,7 @@ async function refreshUi() {
     latestState = state;
     latestPresets = presets;
     latestDriftSamples = drift.samples ?? [];
+    driftBaseline = drift.baseline ?? null;
     renderPresets();
     renderDriftSamples();
     if (
@@ -1116,7 +1122,6 @@ async function refreshUi() {
     setStatusPill("drift-normal", formatAnglePair(state.normal_bearing_deg, state.normal_elevation_deg), typeof state.normal_bearing_deg === "number" ? "slate" : "amber");
     setStatusPill("drift-beam", formatAnglePair(state.beam_bearing_deg, state.beam_elevation_deg), typeof state.beam_bearing_deg === "number" ? "slate" : "amber");
     setStatusPill("drift-target", formatAnglePair(state.beam_target_bearing_deg ?? state.target_bearing_deg, state.beam_target_elevation_deg ?? state.target_elevation_deg), typeof (state.beam_target_bearing_deg ?? state.target_bearing_deg) === "number" ? "slate" : "amber");
-    setStatusPill("drift-desired-normal", formatAnglePair(state.desired_normal_bearing_deg, state.desired_normal_elevation_deg), typeof state.desired_normal_bearing_deg === "number" ? "slate" : "amber");
     setStatusPill("drift-predicted", formatAnglePair(state.predicted_pan_deg, state.predicted_tilt_deg), typeof state.predicted_pan_deg === "number" ? "slate" : "amber");
     const errorTone =
       typeof state.pan_tracking_error_deg === "number" &&

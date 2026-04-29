@@ -16,6 +16,7 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 PRESETS_PATH = DATA_DIR / "presets.json"
 DRIFT_SAMPLES_PATH = DATA_DIR / "drift_samples.json"
+DRIFT_BASELINE_PATH = DATA_DIR / "drift_baseline.json"
 MQTT_HOST = os.getenv("HELIOSTAT_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.getenv("HELIOSTAT_MQTT_PORT", "1883"))
 MQTT_BASE_TOPIC = os.getenv("HELIOSTAT_MQTT_BASE_TOPIC", "heliostat/remote1")
@@ -178,6 +179,25 @@ def load_drift_samples() -> list[dict]:
 def save_drift_samples(samples: list[dict]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DRIFT_SAMPLES_PATH.write_text(json.dumps(samples, indent=2) + "\n", encoding="utf-8")
+
+
+def load_drift_baseline() -> dict | None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not DRIFT_BASELINE_PATH.exists():
+        DRIFT_BASELINE_PATH.write_text("null\n", encoding="utf-8")
+        return None
+
+    try:
+        loaded = json.loads(DRIFT_BASELINE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    return loaded if isinstance(loaded, dict) else None
+
+
+def save_drift_baseline(baseline: dict | None) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DRIFT_BASELINE_PATH.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
 
 
 def save_presets(presets: dict) -> None:
@@ -382,7 +402,16 @@ def api_presets() -> dict:
 
 @app.get("/api/drift")
 def api_drift() -> dict:
-    return {"samples": load_drift_samples()}
+    return {"samples": load_drift_samples(), "baseline": load_drift_baseline()}
+
+
+@app.post("/api/drift/baseline")
+def api_drift_baseline(payload: dict) -> dict:
+    baseline = payload.get("baseline")
+    if baseline is not None and not isinstance(baseline, dict):
+        raise HTTPException(status_code=400, detail="baseline must be an object or null")
+    save_drift_baseline(baseline)
+    return {"ok": True, "baseline": baseline}
 
 
 @app.post("/api/drift/sample")
@@ -420,7 +449,8 @@ def api_drift_sample(payload: dict) -> dict:
 def api_drift_clear() -> dict:
     samples: list[dict] = []
     save_drift_samples(samples)
-    return {"ok": True, "samples": samples}
+    save_drift_baseline(None)
+    return {"ok": True, "samples": samples, "baseline": None}
 
 
 @app.post("/api/presets/site")
