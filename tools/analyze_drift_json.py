@@ -14,6 +14,7 @@ from typing import Iterable
 @dataclass
 class DriftRow:
     timestamp_unix_ms: int
+    baseline_timestamp_unix_ms: int | None
     label: str
     pan_correction_deg: float
     tilt_correction_deg: float
@@ -77,10 +78,15 @@ def load_rows(path: Path) -> list[DriftRow]:
         state = item.get("state")
         if not isinstance(state, dict):
             raise ValueError(f"Sample {index} has no valid state object")
+        baseline = item.get("baseline")
+        baseline_timestamp_unix_ms = None
+        if isinstance(baseline, dict) and isinstance(baseline.get("timestamp_unix_ms"), (int, float)):
+            baseline_timestamp_unix_ms = int(baseline["timestamp_unix_ms"])
 
         rows.append(
             DriftRow(
                 timestamp_unix_ms=int(require_number(item.get("timestamp_unix_ms"), "timestamp_unix_ms")),
+                baseline_timestamp_unix_ms=baseline_timestamp_unix_ms,
                 label=str(item.get("label") or ""),
                 pan_correction_deg=require_number(item.get("pan_correction_deg"), "pan_correction_deg"),
                 tilt_correction_deg=require_number(item.get("tilt_correction_deg"), "tilt_correction_deg"),
@@ -111,6 +117,27 @@ def load_rows(path: Path) -> list[DriftRow]:
 def fmt_ts(unix_ms: int) -> str:
     dt = datetime.fromtimestamp(unix_ms / 1000.0, tz=timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
+
+
+def fmt_report_stamp(unix_ms: int) -> str:
+    dt = datetime.fromtimestamp(unix_ms / 1000.0, tz=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H-%M-%SZ")
+
+
+def fmt_hms_from_unix_seconds(unix_seconds: float) -> str:
+    dt = datetime.fromtimestamp(unix_seconds, tz=timezone.utc)
+    return dt.strftime("%H:%M:%S")
+
+
+def first_baseline_unix_ms(rows: list[DriftRow]) -> int:
+    baseline_values = [
+        row.baseline_timestamp_unix_ms
+        for row in rows
+        if row.baseline_timestamp_unix_ms is not None
+    ]
+    if baseline_values:
+        return min(baseline_values)
+    return rows[0].timestamp_unix_ms
 
 
 def mean(values: Iterable[float]) -> float:
@@ -213,6 +240,30 @@ def fit_line_points(
     return f"{x0:.1f},{y0:.1f} {x1:.1f},{y1:.1f}"
 
 
+def scatter_points_svg(
+    xs: list[float],
+    ys: list[float],
+    color: str,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    plot_x: float,
+    plot_y: float,
+    plot_width: float,
+    plot_height: float,
+) -> str:
+    circles: list[str] = []
+    for x_value, y_value in zip(xs, ys):
+        x, y = scale_point(
+            x_value, y_value, x_min, x_max, y_min, y_max, plot_x, plot_y, plot_width, plot_height
+        )
+        circles.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{color}" stroke="#0f1726" stroke-width="1.0"/>'
+        )
+    return "\n".join(circles)
+
+
 def chart_svg(
     title: str,
     x_label: str,
@@ -259,7 +310,7 @@ def chart_svg(
             f'<line x1="{x:.1f}" y1="{top:.1f}" x2="{x:.1f}" y2="{top + plot_height:.1f}" stroke="#132136" stroke-width="1"/>'
         )
         parts.append(
-            f'<text x="{x:.1f}" y="{top + plot_height + 18:.1f}" text-anchor="middle" font-size="11" fill="#93a4bf">{x_value:.0f}</text>'
+            f'<text x="{x:.1f}" y="{top + plot_height + 18:.1f}" text-anchor="middle" font-size="11" fill="#93a4bf">{html.escape(fmt_hms_from_unix_seconds(x_value))}</text>'
         )
 
     zero_y = None
@@ -276,6 +327,11 @@ def chart_svg(
         parts.append(
             f'<polyline fill="none" stroke="{color}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" points="{polyline}"/>'
         )
+        scatter_points = scatter_points_svg(
+            xs, values, color, x_min, x_max, y_min, y_max, left, top, plot_width, plot_height
+        )
+        if scatter_points:
+            parts.append(scatter_points)
         fit_points = fit_line_points(xs, values, x_min, x_max, y_min, y_max, left, top, plot_width, plot_height)
         if fit_points:
             parts.append(
@@ -299,10 +355,7 @@ def chart_svg(
 
 
 def write_svg(rows: list[DriftRow], output_path: Path) -> None:
-    first = rows[0]
-    elapsed_minutes = [
-        (row.timestamp_unix_ms - first.timestamp_unix_ms) / 60_000.0 for row in rows
-    ]
+    epoch_seconds = [row.timestamp_unix_ms / 1000.0 for row in rows]
     pan_error = [row.pan_tracking_error_deg for row in rows]
     tilt_error = [row.tilt_tracking_error_deg for row in rows]
     pan_corr = [row.pan_correction_deg for row in rows]
@@ -317,9 +370,9 @@ def write_svg(rows: list[DriftRow], output_path: Path) -> None:
     )
     chart1 = chart_svg(
         "Model residual vs time",
-        "Elapsed time (minutes)",
+        "Time (UTC, HH:MM:SS)",
         "Residual (degrees)",
-        elapsed_minutes,
+        epoch_seconds,
         [
             ("Pan residual", pan_error, "#60a5fa"),
             ("Tilt residual", tilt_error, "#f97316"),
@@ -328,9 +381,9 @@ def write_svg(rows: list[DriftRow], output_path: Path) -> None:
     )
     chart2 = chart_svg(
         "Manual correction vs time",
-        "Elapsed time (minutes)",
+        "Time (UTC, HH:MM:SS)",
         "Correction (degrees)",
-        elapsed_minutes,
+        epoch_seconds,
         [
             ("Pan correction", pan_corr, "#34d399"),
             ("Tilt correction", tilt_corr, "#f472b6"),
@@ -342,9 +395,14 @@ def write_svg(rows: list[DriftRow], output_path: Path) -> None:
 
 
 def print_summary(rows: list[DriftRow]) -> None:
+    print(build_summary_text(rows))
+
+
+def build_summary_text(rows: list[DriftRow]) -> str:
     first = rows[0]
     last = rows[-1]
     duration_hours = (last.timestamp_unix_ms - first.timestamp_unix_ms) / 3_600_000.0
+    baseline_unix_ms = first_baseline_unix_ms(rows)
 
     target_bearing_values = [row.target_bearing_deg for row in rows]
     target_elevation_values = [row.target_elevation_deg for row in rows]
@@ -366,33 +424,47 @@ def print_summary(rows: list[DriftRow]) -> None:
     pan_bearing_slope, _, pan_bearing_r = linear_fit(sun_bearing, pan_corr)
     tilt_elev_slope, _, tilt_elev_r = linear_fit(sun_elevation, tilt_corr)
 
-    print("Drift analysis")
-    print(f"- Samples: {len(rows)}")
-    print(f"- Time range: {fmt_ts(first.timestamp_unix_ms)} -> {fmt_ts(last.timestamp_unix_ms)}")
-    print(f"- Duration: {duration_hours:.2f} h")
-    print(
-        f"- Captured target stability: bearing span "
-        f"{max(target_bearing_values) - min(target_bearing_values):.4f}°, elevation span "
-        f"{max(target_elevation_values) - min(target_elevation_values):.4f}°"
-    )
-    print(
-        f"- Servo following command: mean(actual-target) pan {mean(servo_pan_error):+.3f}°, "
-        f"tilt {mean(servo_tilt_error):+.3f}°"
-    )
-    print(
-        f"- Model residual: mean(predicted-actual) pan {mean(model_pan_error):+.3f}°, "
-        f"tilt {mean(model_tilt_error):+.3f}°"
-    )
-    print(
-        f"- Manual correction trend vs time: pan {pan_time_slope:+.4f}°/min (r={pan_time_r:+.3f}), "
-        f"tilt {tilt_time_slope:+.4f}°/min (r={tilt_time_r:+.3f})"
-    )
-    print(
-        f"- Manual pan correction vs sun bearing: {pan_bearing_slope:+.4f}°/bearing° (r={pan_bearing_r:+.3f})"
-    )
-    print(
-        f"- Manual tilt correction vs sun elevation: {tilt_elev_slope:+.4f}°/elevation° (r={tilt_elev_r:+.3f})"
-    )
+    lines = [
+        "Drift analysis",
+        f"- First baseline arm: {fmt_ts(baseline_unix_ms)} ({baseline_unix_ms})",
+        f"- Samples: {len(rows)}",
+        f"- Time range: {fmt_ts(first.timestamp_unix_ms)} -> {fmt_ts(last.timestamp_unix_ms)}",
+        f"- Duration: {duration_hours:.2f} h",
+        (
+            f"- Captured target stability: bearing span "
+            f"{max(target_bearing_values) - min(target_bearing_values):.4f}°, elevation span "
+            f"{max(target_elevation_values) - min(target_elevation_values):.4f}°"
+        ),
+        (
+            f"- Servo following command: mean(actual-target) pan {mean(servo_pan_error):+.3f}°, "
+            f"tilt {mean(servo_tilt_error):+.3f}°"
+        ),
+        (
+            f"- Model residual: mean(predicted-actual) pan {mean(model_pan_error):+.3f}°, "
+            f"tilt {mean(model_tilt_error):+.3f}°"
+        ),
+        (
+            f"- Manual correction trend vs time: pan {pan_time_slope:+.4f}°/min (r={pan_time_r:+.3f}), "
+            f"tilt {tilt_time_slope:+.4f}°/min (r={tilt_time_r:+.3f})"
+        ),
+        f"- Manual pan correction vs sun bearing: {pan_bearing_slope:+.4f}°/bearing° (r={pan_bearing_r:+.3f})",
+        f"- Manual tilt correction vs sun elevation: {tilt_elev_slope:+.4f}°/elevation° (r={tilt_elev_r:+.3f})",
+    ]
+    return "\n".join(lines)
+
+
+def write_report(rows: list[DriftRow], json_path: Path) -> Path:
+    reports_dir = json_path.parent / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / f"{fmt_report_stamp(first_baseline_unix_ms(rows))}.txt"
+    report_path.write_text(build_summary_text(rows) + "\n", encoding="utf-8")
+    return report_path
+
+
+def default_svg_path(rows: list[DriftRow], json_path: Path) -> Path:
+    reports_dir = json_path.parent / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    return reports_dir / f"{fmt_report_stamp(first_baseline_unix_ms(rows))}.svg"
 
 
 def print_table(rows: list[DriftRow]) -> None:
@@ -423,13 +495,16 @@ def main() -> int:
         raise ValueError("No samples found")
 
     print_summary(rows)
+    report_path = write_report(rows, args.json_file)
     if args.table:
         print_table(rows)
     if args.svg is not None:
-        output_path = Path(args.svg) if args.svg else args.json_file.with_suffix(".svg")
+        output_path = Path(args.svg) if args.svg else default_svg_path(rows, args.json_file)
         write_svg(rows, output_path)
         print()
         print(f"SVG written to: {output_path}")
+    print()
+    print(f"Report written to: {report_path}")
     return 0
 
 
