@@ -29,6 +29,7 @@ state_lock = threading.Lock()
 runtime_state = {
     "mqtt_connected": False,
     "remote_online": False,
+    "bno055_online": False,
     "mode": "unknown",
     "tracking_model_stage": None,
     "tracking_model_version": None,
@@ -106,6 +107,19 @@ runtime_state = {
     "st3020_default_tilt_pos_at_ext_0_deg": None,
     "st3020_default_tilt_pos_at_ext_45_deg": None,
     "st3020_default_tilt_pos_at_ext_90_deg": None,
+    "bno055_heading_deg": None,
+    "bno055_roll_deg": None,
+    "bno055_pitch_deg": None,
+    "bno055_calib_sys": None,
+    "bno055_calib_gyro": None,
+    "bno055_calib_accel": None,
+    "bno055_calib_mag": None,
+    "bno055_system_status": None,
+    "bno055_self_test_result": None,
+    "bno055_system_error": None,
+    "bno055_uptime_ms": None,
+    "bno055_wifi_rssi_dbm": None,
+    "last_bno055_update_unix_ms": 0,
 }
 
 PRESET_GROUPS = {"site_locations", "beam_directions", "calibration_presets"}
@@ -253,6 +267,8 @@ def on_connect(client: mqtt.Client, _userdata, _flags, reason_code, _properties=
     client.subscribe(topic("state"))
     client.subscribe(topic("diag"))
     client.subscribe(topic("availability"))
+    client.subscribe(topic("bno055/state"))
+    client.subscribe(topic("bno055/availability"))
 
 
 def on_disconnect(_client: mqtt.Client, _userdata, _disconnect_flags, _reason_code, _properties=None) -> None:
@@ -264,6 +280,10 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
 
     if message.topic == topic("availability"):
       set_state(remote_online=(payload.strip().lower() == "online"))
+      return
+
+    if message.topic == topic("bno055/availability"):
+      set_state(bno055_online=(payload.strip().lower() == "online"))
       return
 
     if message.topic == topic("state"):
@@ -349,6 +369,29 @@ def on_message(_client: mqtt.Client, _userdata, message: mqtt.MQTTMessage) -> No
           st3020_default_tilt_pos_at_ext_90_deg=data.get("st3020_default_tilt_pos_at_ext_90_deg"),
           last_state_update_unix_ms=int(round(time.time() * 1000)),
           remote_online=bool(data.get("mqtt_ok", get_state().get("remote_online", False))),
+      )
+      return
+
+    if message.topic == topic("bno055/state"):
+      try:
+        data = json.loads(payload)
+      except json.JSONDecodeError:
+        return
+      set_state(
+          bno055_heading_deg=data.get("heading_deg"),
+          bno055_roll_deg=data.get("roll_deg"),
+          bno055_pitch_deg=data.get("pitch_deg"),
+          bno055_calib_sys=data.get("calib_sys"),
+          bno055_calib_gyro=data.get("calib_gyro"),
+          bno055_calib_accel=data.get("calib_accel"),
+          bno055_calib_mag=data.get("calib_mag"),
+          bno055_system_status=data.get("system_status"),
+          bno055_self_test_result=data.get("self_test_result"),
+          bno055_system_error=data.get("system_error"),
+          bno055_uptime_ms=data.get("uptime_ms"),
+          bno055_wifi_rssi_dbm=data.get("wifi_rssi_dbm"),
+          last_bno055_update_unix_ms=int(round(time.time() * 1000)),
+          bno055_online=True,
       )
       return
 

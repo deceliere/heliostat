@@ -959,6 +959,7 @@ async function refreshUi() {
     setStatusPill("backend-status", health.ok ? "Online" : "Offline", health.ok ? "green" : "red");
     setStatusPill("mqtt-status", health.mqtt_connected ? "Connected" : "Disconnected", health.mqtt_connected ? "green" : "red");
     setStatusPill("remote-status", health.remote_online ? "Online" : "Offline", health.remote_online ? "green" : "red");
+    setStatusPill("bno055-status", state.bno055_online ? "Online" : "Offline", state.bno055_online ? "green" : "amber");
 
     const mode = state.mode ?? "Unknown";
     if (mode === "auto") {
@@ -1138,14 +1139,27 @@ async function refreshUi() {
     setText("state-predicted", `${formatAngleValue(state.predicted_pan_deg)} / ${formatAngleValue(state.predicted_tilt_deg)}`);
     setText("state-beam", `${formatAngleValue(state.beam_bearing_deg)} / ${formatAngleValue(state.beam_elevation_deg)}`);
     setText("state-error", `${formatAngleValue(state.pan_tracking_error_deg)} / ${formatAngleValue(state.tilt_tracking_error_deg)}`);
+    setText(
+      "state-bno055",
+      `${formatAngleValue(state.bno055_heading_deg)} / ${formatAngleValue(state.bno055_roll_deg)} / ${formatAngleValue(state.bno055_pitch_deg)}`
+    );
+    setText(
+      "state-bno055-calib",
+      typeof state.bno055_calib_sys === "number"
+        ? `${state.bno055_calib_sys} / ${state.bno055_calib_gyro} / ${state.bno055_calib_accel} / ${state.bno055_calib_mag}`
+        : "—"
+    );
     setText("state-output", JSON.stringify(state, null, 2));
   } catch (error) {
     setStatusPill("backend-status", "Error", "red");
+    setStatusPill("bno055-status", "Unknown", "amber");
     setText("state-actual", "—");
     setText("state-target", "—");
     setText("state-predicted", "—");
     setText("state-beam", "—");
     setText("state-error", "—");
+    setText("state-bno055", "—");
+    setText("state-bno055-calib", "—");
     setText("state-output", String(error));
   }
 }

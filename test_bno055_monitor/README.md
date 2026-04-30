@@ -9,6 +9,7 @@ Mini projet autonome pour lire un `BNO055` sur un `ESP32-S3` et afficher les ang
 - `pitch`
 - l'etat de calibration `sys/gyro/accel/mag`
 - le statut interne du BNO055
+- et publie aussi ces infos en MQTT sur le meme broker que le remote moteur
 
 ## Structure
 
@@ -62,3 +63,12 @@ constexpr int BNO055_SCL_PIN = 9;
 ## Remarque utile
 
 Les axes `heading / roll / pitch` du BNO055 dependent de l'orientation physique du module. Pour l'utiliser ensuite sur le miroir, il faudra le fixer dans une orientation stable et noter clairement quelle face/pointe correspond a quel axe.
+
+## MQTT
+
+Le projet reutilise [remote_secrets.h](/Users/r/Documents/PlatformIO/Projects/heliostat%20esp32/include/remote_secrets.h) via `-I../include`.
+
+Topics publies :
+
+- `heliostat/remote1/bno055/state`
+- `heliostat/remote1/bno055/availability`
