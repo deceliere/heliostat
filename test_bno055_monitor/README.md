@@ -64,6 +64,8 @@ constexpr int BNO055_SCL_PIN = 9;
 
 Les axes `heading / roll / pitch` du BNO055 dependent de l'orientation physique du module. Pour l'utiliser ensuite sur le miroir, il faudra le fixer dans une orientation stable et noter clairement quelle face/pointe correspond a quel axe.
 
+Dans l'etat actuel du test, le signe du `roll` est inverse dans le code pour qu'il evolue dans le meme sens que l'elevation du miroir.
+
 ## MQTT
 
 Le projet reutilise [remote_secrets.h](/Users/r/Documents/PlatformIO/Projects/heliostat%20esp32/include/remote_secrets.h) via `-I../include`.

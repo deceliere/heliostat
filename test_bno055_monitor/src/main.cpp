@@ -16,6 +16,7 @@ constexpr uint32_t MQTT_PUBLISH_INTERVAL_MS = 500;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 2000;
 constexpr uint32_t MQTT_RETRY_INTERVAL_MS = 3000;
 constexpr uint8_t BNO055_I2C_ADDRESS = 0x28;
+constexpr float BNO055_ROLL_SIGN = -1.0f;
 
 // Laisse -1 / -1 pour utiliser les pins I2C par defaut de la carte.
 // Si le BNO055 n'est pas detecte, remplace par les bonnes broches du Waveshare.
@@ -97,7 +98,7 @@ void updateOrientationSample() {
   bno.getEvent(&orientationEvent, Adafruit_BNO055::VECTOR_EULER);
 
   lastHeadingDeg = orientationEvent.orientation.x;
-  lastRollDeg = orientationEvent.orientation.z;
+  lastRollDeg = BNO055_ROLL_SIGN * orientationEvent.orientation.z;
   lastPitchDeg = orientationEvent.orientation.y;
 
   bno.getSystemStatus(&lastSystemStatus, &lastSelfTestResult, &lastSystemError);
